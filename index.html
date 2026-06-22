@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bridge</title>
+
+  <!-- Google Fonts: Space Grotesk (utility/display) + Lora (subtitle body) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;600;700&family=Lora:ital,wght@0,400;0,600;1,400&display=swap"
+    rel="stylesheet"
+  />
+
+  <style>
+    /* ── Design tokens ─────────────────────────────────────────────── */
+    :root {
+      --bg:          #0b0e14;
+      --surface:     #131720;
+      --surface-2:   #1c2130;
+      --border:      #252d3e;
+      --accent-en:   #4f9cf9;   /* English — cool blue  */
+      --accent-es:   #f97b4f;   /* Spanish — warm coral */
+      --accent-glow: #4f9cf940;
+      --text-hi:     #e8edf5;
+      --text-mid:    #8b97b0;
+      --text-lo:     #404b60;
+      --red:         #f95f5f;
+      --green:       #4ff985;
+      --font-display: 'Space Grotesk', system-ui, sans-serif;
+      --font-body:    'Lora', Georgia, serif;
+      --radius:       10px;
+      --transition:   180ms ease;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text-hi);
+      font-family: var(--font-display);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1.25rem 4rem;
+      gap: 0;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────── */
+    header {
+      width: 100%;
+      max-width: 860px;
+      margin-bottom: 2.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.35rem;
+    }
+
+    .wordmark {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .wordmark-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent-en), var(--accent-es));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+
+    .wordmark h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-hi);
+    }
+
+    .tagline {
+      font-family: var(--font-body);
+      font-style: italic;
+      font-size: 0.85rem;
+      color: var(--text-mid);
+      padding-left: calc(32px + 0.6rem);
+    }
+
+    /* ── Status bar ────────────────────────────────────────────────── */
+    .status-bar {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.6rem 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 1.5rem;
+      font-size: 0.78rem;
+      color: var(--text-mid);
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-lo);
+      transition: background var(--transition), box-shadow var(--transition);
+    }
+
+    .dot.connected  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .dot.listening  { background: var(--accent-en); box-shadow: 0 0 10px var(--accent-en); animation: pulse 1.2s ease-in-out infinite; }
+    .dot.processing { background: var(--accent-es); box-shadow: 0 0 10px var(--accent-es); }
+    .dot.error      { background: var(--red); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
+    #status-label { font-weight: 600; color: var(--text-hi); }
+
+    /* ── Controls ──────────────────────────────────────────────────── */
+    .controls {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 0.85rem 1.5rem;
+      border: none;
+      border-radius: var(--radius);
+      font-family: var(--font-display);
+      font-size: 0.9rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+      transition: opacity var(--transition), transform var(--transition), box-shadow var(--transition);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn:disabled { opacity: 0.32; cursor: not-allowed; transform: none; }
+    .btn:not(:disabled):hover  { transform: translateY(-1px); }
+    .btn:not(:disabled):active { transform: translateY(0); }
+
+    .btn-start {
+      background: var(--accent-en);
+      color: #fff;
+      box-shadow: 0 4px 20px #4f9cf840;
+    }
+    .btn-start:not(:disabled):hover { box-shadow: 0 6px 28px #4f9cf860; }
+
+    .btn-stop {
+      background: var(--surface-2);
+      color: var(--text-mid);
+      border: 1px solid var(--border);
+    }
+    .btn-stop:not(:disabled):hover { color: var(--red); border-color: var(--red); box-shadow: 0 4px 18px #f95f5f25; }
+
+    /* ── Subtitle panel ────────────────────────────────────────────── */
+    .subtitle-panel {
+      width: 100%;
+      max-width: 860px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .lang-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      min-height: 140px;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      transition: border-color var(--transition);
+    }
+
+    .lang-block.active-en { border-color: var(--accent-en); box-shadow: 0 0 0 1px var(--accent-glow); }
+    .lang-block.active-es { border-color: var(--accent-es); box-shadow: 0 0 0 1px #f97b4f30; }
+
+    .lang-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .lang-label.en { color: var(--accent-en); }
+    .lang-label.es { color: var(--accent-es); }
+
+    .lang-text {
+      font-family: var(--font-body);
+      font-size: 1.05rem;
+      line-height: 1.65;
+      color: var(--text-hi);
+      flex: 1;
+      min-height: 3em;
+    }
+
+    .lang-text.placeholder {
+      color: var(--text-lo);
+      font-style: italic;
+    }
+
+    /* ── History log ───────────────────────────────────────────────── */
+    .history-section {
+      width: 100%;
+      max-width: 860px;
+    }
+
+    .history-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+
+    .history-header h2 {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-lo);
+    }
+
+    .btn-clear {
+      font-family: var(--font-display);
+      font-size: 0.7rem;
+      font-weight: 600;
+      background: none;
+      border: none;
+      color: var(--text-lo);
+      cursor: pointer;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      transition: color var(--transition);
+    }
+
+    .btn-clear:hover { color: var(--red); }
+
+    #history-log {
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      max-height: 320px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    #history-log::-webkit-scrollbar { width: 4px; }
+    #history-log::-webkit-scrollbar-track { background: transparent; }
+    #history-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .history-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem 1rem;
+      animation: slide-in 250ms ease;
+    }
+
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .history-item .ts {
+      grid-column: 1 / -1;
+      font-size: 0.65rem;
+      color: var(--text-lo);
+      font-weight: 600;
+      letter-spacing: 0.06em;
+    }
+
+    .history-item .hi-en {
+      font-family: var(--font-body);
+      font-size: 0.88rem;
+      color: var(--text-mid);
+      border-left: 2px solid var(--accent-en);
+      padding-left: 0.5rem;
+    }
+
+    .history-item .hi-es {
+      font-family: var(--font-body);
+      font-size: 0.88rem;
+      color: var(--text-mid);
+      border-left: 2px solid var(--accent-es);
+      padding-left: 0.5rem;
+    }
+
+    .empty-log {
+      color: var(--text-lo);
+      font-size: 0.82rem;
+      font-style: italic;
+      text-align: center;
+      padding: 2rem 0;
+    }
+
+    /* ── Audio level bar ───────────────────────────────────────────── */
+    .level-bar-wrap {
+      width: 100%;
+      max-width: 860px;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .level-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-lo);
+      flex-shrink: 0;
+      width: 52px;
+    }
+
+    .level-track {
+      flex: 1;
+      height: 4px;
+      background: var(--surface-2);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    #level-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent-en);
+      border-radius: 2px;
+      transition: width 60ms linear, background 200ms;
+    }
+
+    #level-fill.loud { background: var(--accent-es); }
+
+    @media (max-width: 600px) {
+      .subtitle-panel { grid-template-columns: 1fr; }
+      .history-item   { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────────────── -->
+  <header>
+    <div class="wordmark">
+      <div class="wordmark-icon">⇌</div>
+      <h1>Bridge</h1>
+    </div>
+    <p class="tagline">Real-time EN → ES voice translation · Fully local · Fully yours</p>
+  </header>
+
+  <!-- ── Status bar ──────────────────────────────────────────────────── -->
+  <div class="status-bar">
+    <div class="status-indicator">
+      <div class="dot" id="status-dot"></div>
+      <span id="status-label">Disconnected</span>
+    </div>
+    <span id="chunk-count" style="font-size:0.72rem;">0 chunks sent</span>
+  </div>
+
+  <!-- ── Controls ────────────────────────────────────────────────────── -->
+  <div class="controls">
+    <button class="btn btn-start" id="btn-start">▶ Start Listening</button>
+    <button class="btn btn-stop"  id="btn-stop" disabled>⏹ Stop</button>
+  </div>
+
+  <!-- ── Audio level ──────────────────────────────────────────────────── -->
+  <div class="level-bar-wrap">
+    <span class="level-label">Mic Level</span>
+    <div class="level-track">
+      <div id="level-fill"></div>
+    </div>
+  </div>
+
+  <!-- ── Live subtitles ──────────────────────────────────────────────── -->
+  <div class="subtitle-panel">
+    <div class="lang-block" id="block-en">
+      <span class="lang-label en">English — Transcription</span>
+      <div class="lang-text placeholder" id="text-en">Listening for speech…</div>
+    </div>
+    <div class="lang-block" id="block-es">
+      <span class="lang-label es">Español — Traducción</span>
+      <div class="lang-text placeholder" id="text-es">En espera de traducción…</div>
+    </div>
+  </div>
+
+  <!-- ── History ─────────────────────────────────────────────────────── -->
+  <div class="history-section">
+    <div class="history-header">
+      <h2>Session History</h2>
+      <button class="btn-clear" id="btn-clear">Clear</button>
+    </div>
+    <div id="history-log">
+      <p class="empty-log">Translations will appear here.</p>
+    </div>
+  </div>
+
+  <!-- ── JavaScript ──────────────────────────────────────────────────── -->
+  <script>
+  (() => {
+    "use strict";
+
+    // ── DOM refs ──────────────────────────────────────────────────────
+    const btnStart    = document.getElementById("btn-start");
+    const btnStop     = document.getElementById("btn-stop");
+    const btnClear    = document.getElementById("btn-clear");
+    const statusDot   = document.getElementById("status-dot");
+    const statusLabel = document.getElementById("status-label");
+    const chunkCount  = document.getElementById("chunk-count");
+    const textEn      = document.getElementById("text-en");
+    const textEs      = document.getElementById("text-es");
+    const blockEn     = document.getElementById("block-en");
+    const blockEs     = document.getElementById("block-es");
+    const historyLog  = document.getElementById("history-log");
+    const levelFill   = document.getElementById("level-fill");
+
+    // ── State ─────────────────────────────────────────────────────────
+    let ws            = null;
+    let mediaRecorder = null;
+    let audioCtx      = null;
+    let analyser      = null;
+    let micSource     = null;
+    let micStream     = null;
+    let levelRafId    = null;
+    let totalChunks   = 0;
+
+    // Web Audio playback queue
+    let playbackCtx   = null;
+    let nextPlayTime  = 0;
+    const SAMPLE_RATE = 24000; // Kokoro default sample rate
+
+    // ── Status helpers ────────────────────────────────────────────────
+    const STATES = {
+      disconnected: { label: "Disconnected",  cls: ""           },
+      connected:    { label: "Connected",     cls: "connected"  },
+      listening:    { label: "Listening…",    cls: "listening"  },
+      processing:   { label: "Processing…",   cls: "processing" },
+      error:        { label: "Error",         cls: "error"      },
+    };
+
+    function setStatus(key) {
+      const s = STATES[key] || STATES.disconnected;
+      statusLabel.textContent = s.label;
+      statusDot.className     = "dot " + s.cls;
+      console.log(`[STATUS] ${s.label}`);
+    }
+
+    // ── Mic level visualiser ──────────────────────────────────────────
+    function startLevelMeter(stream) {
+      audioCtx  = new AudioContext();
+      analyser  = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      micSource = audioCtx.createMediaStreamSource(stream);
+      micSource.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      function tick() {
+        analyser.getByteFrequencyData(data);
+        const avg  = data.reduce((s, v) => s + v, 0) / data.length;
+        const pct  = Math.min(100, (avg / 128) * 200);
+        levelFill.style.width = pct + "%";
+        levelFill.classList.toggle("loud", pct > 60);
+        levelRafId = requestAnimationFrame(tick);
+      }
+      tick();
+    }
+
+    function stopLevelMeter() {
+      if (levelRafId) cancelAnimationFrame(levelRafId);
+      levelFill.style.width = "0%";
+      micSource?.disconnect();
+      audioCtx?.close();
+      micSource = null;
+      audioCtx  = null;
+      analyser  = null;
+    }
+
+    // ── Web Audio playback (streaming PCM from server) ─────────────────
+    function ensurePlaybackCtx() {
+      if (!playbackCtx || playbackCtx.state === "closed") {
+        playbackCtx  = new AudioContext({ sampleRate: SAMPLE_RATE });
+        nextPlayTime = 0;
+      }
+    }
+
+    function scheduleAudioChunk(int16Bytes) {
+      ensurePlaybackCtx();
+
+      // int16 PCM → float32
+      const int16Arr = new Int16Array(int16Bytes);
+      const float32  = new Float32Array(int16Arr.length);
+      for (let i = 0; i < int16Arr.length; i++) {
+        float32[i] = int16Arr[i] / 32768.0;
+      }
+
+      const numFrames  = float32.length;
+      const buffer     = playbackCtx.createBuffer(1, numFrames, SAMPLE_RATE);
+      buffer.copyToChannel(float32, 0);
+
+      const source = playbackCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(playbackCtx.destination);
+
+      const startAt = Math.max(playbackCtx.currentTime, nextPlayTime);
+      source.start(startAt);
+      nextPlayTime = startAt + buffer.duration;
+
+      console.log(`[AUDIO] Scheduled ${numFrames} frames @ ${startAt.toFixed(3)}s`);
+    }
+
+    // ── WebSocket lifecycle ───────────────────────────────────────────
+    function connectWebSocket() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const url   = `${proto}://${location.host}/ws/stream`;
+      console.log(`[WS] Connecting to ${url}`);
+
+      ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        console.log("[WS] Connection open.");
+        setStatus("listening");
+      };
+
+      ws.onmessage = (evt) => {
+        if (typeof evt.data === "string") {
+          // JSON control / subtitle message
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.type === "subtitle") {
+              updateSubtitles(msg.en, msg.es);
+            }
+          } catch (e) {
+            console.warn("[WS] Non-JSON text message:", evt.data);
+          }
+        } else {
+          // Binary: raw PCM audio bytes for playback
+          console.log(`[AUDIO] Received ${evt.data.byteLength} bytes from server.`);
+          try {
+            scheduleAudioChunk(evt.data);
+          } catch (e) {
+            console.error("[AUDIO] Playback error:", e);
+          }
+        }
+      };
+
+      ws.onerror = (e) => {
+        console.error("[WS] Error:", e);
+        setStatus("error");
+      };
+
+      ws.onclose = (e) => {
+        console.log(`[WS] Closed (code=${e.code}).`);
+        setStatus("disconnected");
+        ws = null;
+      };
+    }
+
+    // ── MediaRecorder capture ─────────────────────────────────────────
+    async function startCapture() {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount:      1,
+            sampleRate:        16000,
+            echoCancellation:  true,
+            noiseSuppression:  true,
+            autoGainControl:   true,
+          },
+          video: false,
+        });
+        console.log("[MIC] Stream acquired.");
+      } catch (err) {
+        console.error("[MIC] Permission denied or unavailable:", err);
+        setStatus("error");
+        statusLabel.textContent = "Mic error — check permissions";
+        return;
+      }
+
+      startLevelMeter(micStream);
+      connectWebSocket();
+
+      // Pick the best supported MIME type
+      const mimeTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+        "audio/ogg",
+      ];
+      const mimeType = mimeTypes.find(t => MediaRecorder.isTypeSupported(t)) || "";
+      console.log(`[MediaRecorder] Using MIME: ${mimeType || "(browser default)"}`);
+
+      mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType } : {});
+
+      mediaRecorder.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0 && ws?.readyState === WebSocket.OPEN) {
+          ws.send(evt.data);
+          totalChunks++;
+          chunkCount.textContent = `${totalChunks} chunk${totalChunks !== 1 ? "s" : ""} sent`;
+          console.log(`[CHUNK] Sent ${evt.data.size} bytes (total: ${totalChunks})`);
+        }
+      };
+
+      mediaRecorder.onerror = (e) => console.error("[MediaRecorder] Error:", e);
+
+      // Slice into 100 ms chunks
+      mediaRecorder.start(100);
+      console.log("[MediaRecorder] Recording started (100 ms slices).");
+
+      btnStart.disabled = true;
+      btnStop.disabled  = false;
+    }
+
+    function stopCapture() {
+      console.log("[CAPTURE] Stopping.");
+
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+        mediaRecorder = null;
+      }
+
+      micStream?.getTracks().forEach(t => t.stop());
+      micStream = null;
+
+      stopLevelMeter();
+
+      if (ws) {
+        ws.close(1000, "User stopped capture.");
+        ws = null;
+      }
+
+      btnStart.disabled = false;
+      btnStop.disabled  = true;
+      totalChunks       = 0;
+      chunkCount.textContent = "0 chunks sent";
+
+      setStatus("disconnected");
+      resetSubtitles();
+    }
+
+    // ── Subtitle helpers ──────────────────────────────────────────────
+    function updateSubtitles(en, es) {
+      // English block
+      textEn.textContent = en || "—";
+      textEn.classList.remove("placeholder");
+      blockEn.classList.add("active-en");
+      setTimeout(() => blockEn.classList.remove("active-en"), 2000);
+
+      // Spanish block
+      textEs.textContent = es || "—";
+      textEs.classList.remove("placeholder");
+      blockEs.classList.add("active-es");
+      setTimeout(() => blockEs.classList.remove("active-es"), 2000);
+
+      // Append to history
+      appendHistory(en, es);
+    }
+
+    function resetSubtitles() {
+      textEn.textContent = "Listening for speech…";
+      textEn.classList.add("placeholder");
+      textEs.textContent = "En espera de traducción…";
+      textEs.classList.add("placeholder");
+    }
+
+    // ── History log ───────────────────────────────────────────────────
+    let historyEmpty = true;
+
+    function appendHistory(en, es) {
+      if (historyEmpty) {
+        historyLog.innerHTML = "";
+        historyEmpty = false;
+      }
+
+      const now   = new Date();
+      const stamp = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+      const item = document.createElement("div");
+      item.className = "history-item";
+      item.innerHTML = `
+        <span class="ts">${stamp}</span>
+        <div class="hi-en">${escHtml(en)}</div>
+        <div class="hi-es">${escHtml(es)}</div>
+      `;
+      historyLog.prepend(item);  // newest first
+    }
+
+    function escHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // ── Event listeners ───────────────────────────────────────────────
+    btnStart.addEventListener("click", () => startCapture());
+    btnStop.addEventListener("click",  () => stopCapture());
+
+    btnClear.addEventListener("click", () => {
+      historyLog.innerHTML = '<p class="empty-log">Translations will appear here.</p>';
+      historyEmpty = true;
+    });
+
+    // Resume AudioContext on first interaction (browser policy)
+    document.addEventListener("click", () => {
+      playbackCtx?.resume();
+    }, { once: false });
+
+    console.log("[INIT] Bridge client ready.");
+  })();
+  </script>
+</body>
+</html>
