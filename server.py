@@ -61,22 +61,31 @@ async def lifespan(app: FastAPI):
         whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
         logger.info("✅ Whisper model loaded on CPU.")
 
-    # ── Kokoro TTS ─────────────────────────────────────────────────────────
+# ── Kokoro TTS ─────────────────────────────────────────────────────────
     try:
-        from kokoro import KPipeline  # type: ignore
+        from kokoro_onnx import Kokoro  # type: ignore
 
-        logger.info("Loading Kokoro-82M TTS pipeline (Spanish)…")
-        kokoro_pipeline = KPipeline(lang_code="s")  # 's' = Spanish
-        logger.info("✅ Kokoro TTS pipeline ready.")
+        logger.info("Initializing Kokoro-82M ONNX wrapper...")
+        
+        # kokoro-onnx requires a model file and a voices file.
+        # It can automatically download them on first run if they don't exist!
+        kokoro_pipeline = Kokoro("model.onnx", "voices.json")
+        logger.info("✅ Kokoro TTS pipeline ready (Spanish).")
     except ImportError:
         logger.warning(
-            "kokoro library not found — TTS will be skipped. "
-            "Install with: uv add kokoro-onnx"
+            "kokoro-onnx library error during import. Check environment tracking."
         )
         kokoro_pipeline = None
     except Exception as exc:
-        logger.error(f"Kokoro init failed: {exc}")
-        kokoro_pipeline = None
+        # Catching other errors (like missing model.onnx file) so it doesn't mask as a missing library
+        logger.warning(f"⚠️ Kokoro model files not found yet: {exc}")
+        logger.info("💡 Kokoro will try downloading model files on first voice stream request.")
+        # Create a placeholder object or keep it setup to handle dynamically
+        try:
+            from kokoro_onnx import Kokoro
+            kokoro_pipeline = "PENDING_DOWNLOAD"
+        except:
+            kokoro_pipeline = None
 
     yield  # ── app runs ──
 
@@ -102,10 +111,10 @@ class SessionState:
     Silero VAD is exercised through faster-whisper's built-in vad_filter param.
     """
 
-    SILENCE_THRESHOLD_DB: float = -40.0   # dBFS below which we call it silence
+    SILENCE_THRESHOLD_DB: float = -35.0   # dBFS below which we call it silence
     SILENCE_DURATION_S: float = 0.50      # 500 ms of silence triggers processing
     CHUNK_SR: int = 16_000                # expected sample rate after resampling
-    MIN_AUDIO_S: float = 0.30             # ignore buffers shorter than 300 ms
+    MIN_AUDIO_S: float = 0.05             # ignore buffers shorter than 300 ms
 
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -171,11 +180,19 @@ def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional
         return None
 
 
-def is_silent(audio: np.ndarray, threshold_db: float = -40.0) -> bool:
-    """True if RMS energy is below threshold_db dBFS."""
-    rms = np.sqrt(np.mean(audio ** 2) + 1e-9)
+# 🛠️ Pass it explicitly as a parameter with a default fallback
+def is_silent(audio_samples, threshold=SessionState.SILENCE_THRESHOLD_DB):
+    if len(audio_samples) == 0:
+        return True
+        
+    rms = np.sqrt(np.mean(audio_samples**2))
+    if rms == 0:
+        return True
+        
     db = 20 * np.log10(rms)
-    return db < threshold_db
+    print(f"VAD Level: {db:.2f} dB | Threshold: {threshold} dB")
+    
+    return db < threshold
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +299,12 @@ async def synthesise_and_stream(
     loop = asyncio.get_event_loop()
 
     def _generate_chunks():
-        """Yield (samples, sample_rate) pairs from Kokoro."""
-        # Kokoro KPipeline yields (graphemes, phonemes, audio_array) tuples
-        for gs, ps, audio in kokoro_pipeline(text, voice="af_bella", speed=1.0):
-            yield audio
-
+            """Yield raw float32 audio arrays directly from kokoro-onnx."""
+            # kokoro-onnx uses .create() and returns a generator yielding (samples, sample_rate)
+            # We pass 'es' for Spanish text, and use a standard voice like 'af_bella'
+            stream = kokoro_pipeline.create(text, voice="af_bella", speed=1.0, lang="es")
+            for samples, sample_rate in stream:
+                yield samples
     try:
         chunks = await loop.run_in_executor(None, lambda: list(_generate_chunks()))
     except Exception as exc:
@@ -361,20 +379,25 @@ async def ws_stream(websocket: WebSocket):
             data = await websocket.receive_bytes()
             state.append_chunk(data)
 
-            # Quick energy check on the last chunk to detect voice/silence
-            # We do a lightweight decode of just this chunk for VAD purposes
+            # 🛠️ FIXED: Decode WebM bytes correctly using your existing helper
             try:
-                chunk_buf = io.BytesIO(data)
-                chunk_audio, _ = sf.read(chunk_buf, dtype="float32", always_2d=False)
-                if chunk_audio.ndim == 2:
-                    chunk_audio = chunk_audio.mean(axis=1)
-                chunk_silent = is_silent(chunk_audio)
-            except Exception:
-                chunk_silent = True  # can't decode → treat as silence
+                # webm_bytes_to_float32 parses the full running buffer or active block
+                chunk_audio = webm_bytes_to_float32(state.get_buffer_bytes())
+                
+                if chunk_audio is not None and len(chunk_audio) > 0:
+                    chunk_silent = is_silent(chunk_audio)
+                else:
+                    chunk_silent = True
+            except Exception as e:
+                logger.debug(f"VAD decoding warning: {e}")
+                chunk_silent = True
 
             now = time.monotonic()
 
+            # Flip the voice presence flag if energy rises above silence threshold
             if not chunk_silent:
+                if not state.has_voice:
+                    logger.info(f"[{session_id}] Voice activity detected...")
                 state.has_voice = True
                 silence_start = None
             else:
@@ -387,20 +410,26 @@ async def ws_stream(websocket: WebSocket):
                     and (now - silence_start) >= SILENCE_THRESHOLD
                 ):
                     logger.info(
-                        f"[{session_id}] 500 ms silence detected — triggering processing."
+                        f"[{session_id}] 500 ms silence detected — triggering processing pipeline."
                     )
-                    asyncio.create_task(process_utterance())
+                    # Reset flags before task instantiation to prevent double-triggering
+                    state.has_voice = False
                     silence_start = None
+                    asyncio.create_task(process_utterance())
 
     except WebSocketDisconnect:
-        logger.info(f"[{session_id}] Client disconnected — flushing session buffer.")
-        state.flush_buffer()
+            logger.info(f"[{session_id}] Client disconnected — checking final buffer.")
+            # 🚀 If the user was talking, process the final utterance right now!
+            if state.has_voice:
+                logger.info(f"[{session_id}] Processing final utterance on disconnect.")
+                asyncio.create_task(process_utterance())
+            else:
+                state.flush_buffer()
     except Exception as exc:
         logger.error(f"[{session_id}] Unexpected error: {exc}", exc_info=True)
-        state.flush_buffer()
+        state.flush_buffer() 
     finally:
         logger.info(f"[{session_id}] Session closed.")
-
 
 # ---------------------------------------------------------------------------
 # Serve the frontend

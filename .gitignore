@@ -1,0 +1,29 @@
+# -- LARGE ML MODEL ASSETS (Local Only) --
+model.onnx
+voices.json
+*.onnx
+*.bin
+
+# -- PYTHON VIRTUAL ENVIRONMENTS --
+.venv/
+venv/
+ENV/
+env/
+
+# -- PYTHON CACHE & COMPILED BYTECODE --
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.pypy_cache/
+
+# -- APPLICATION & IDE CONFIGURATIONS --
+.env
+.secrets
+.vscode/
+.idea/
+
+# -- OS SPECIFIC FILES (Windows / macOS) --
+Thumbs.db
+Desktop.ini
+.DS_Store
