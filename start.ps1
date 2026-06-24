@@ -17,7 +17,7 @@ if (-not (Test-Path ".\.venv\Scripts\Activate.ps1")) {
 
 # 2. Boot up Ollama in a brand new, separate terminal window
 Write-Host "🤖 Launching Ollama (llama3.2)..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "ollama run llama3.2"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "ollama serve"
 
 # 3. Give Ollama a tiny 2-second head start to bind to its port
 Start-Sleep -Seconds 2
