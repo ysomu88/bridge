@@ -155,10 +155,53 @@ class SessionState:
 # ---------------------------------------------------------------------------
 def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional[np.ndarray]:
     """
-    Decode a complete WebM/Opus buffer → numpy float32 mono @ target_sr.
-    Used only for the final transcription decode, not for per-chunk VAD.
+    Decode a complete WebM/Opus (or OGG/Opus) buffer → numpy float32 mono @ target_sr.
+    Uses PyAV (FFmpeg) which handles any browser audio container on Windows.
+    Falls back to soundfile if PyAV is unavailable.
     Returns None if decoding fails or audio is too short.
     """
+    # Log the first 4 bytes so we can see the container format magic bytes
+    magic = raw_bytes[:4].hex() if len(raw_bytes) >= 4 else "??"
+    logger.debug(f"Audio buffer magic bytes: {magic} (1a45dfa3=WebM, 4f676753=OGG)")
+
+    # ── Try PyAV first (FFmpeg-backed, handles WebM/Opus on Windows) ──────
+    try:
+        import av  # type: ignore
+        buf = io.BytesIO(raw_bytes)
+        container = av.open(buf, format=None)  # let FFmpeg auto-detect format
+        frames = []
+        for frame in container.decode(audio=0):
+            frames.append(frame.to_ndarray())
+        if not frames:
+            logger.warning("PyAV decoded 0 frames")
+            return None
+        audio = np.concatenate(frames, axis=-1).mean(axis=0).astype(np.float32)
+        sr = container.streams.audio[0].codec_context.sample_rate
+        container.close()
+
+        if sr != target_sr:
+            ratio = target_sr / sr
+            new_len = int(len(audio) * ratio)
+            audio = np.interp(
+                np.linspace(0, len(audio) - 1, new_len),
+                np.arange(len(audio)),
+                audio,
+            )
+
+        min_samples = int(VAD_MIN_SPEECH_S * target_sr)
+        if len(audio) < min_samples:
+            logger.debug(f"Audio too short: {len(audio)} samples < {min_samples} minimum")
+            return None
+
+        logger.debug(f"PyAV decoded {len(audio)/target_sr:.2f}s of audio at {sr}Hz")
+        return audio.astype(np.float32)
+
+    except ImportError:
+        logger.debug("PyAV not available, falling back to soundfile")
+    except Exception as exc:
+        logger.warning(f"PyAV decode failed: {exc} — falling back to soundfile")
+
+    # ── Fallback: soundfile (works if libsndfile has WebM support) ────────
     try:
         buf = io.BytesIO(raw_bytes)
         audio, sr = sf.read(buf, dtype="float32", always_2d=False)
@@ -167,17 +210,13 @@ def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional
             audio = audio.mean(axis=1)
 
         if sr != target_sr:
-            try:
-                import resampy  # type: ignore
-                audio = resampy.resample(audio, sr, target_sr)
-            except ImportError:
-                ratio = target_sr / sr
-                new_len = int(len(audio) * ratio)
-                audio = np.interp(
-                    np.linspace(0, len(audio) - 1, new_len),
-                    np.arange(len(audio)),
-                    audio,
-                )
+            ratio = target_sr / sr
+            new_len = int(len(audio) * ratio)
+            audio = np.interp(
+                np.linspace(0, len(audio) - 1, new_len),
+                np.arange(len(audio)),
+                audio,
+            )
 
         min_samples = int(VAD_MIN_SPEECH_S * target_sr)
         if len(audio) < min_samples:
@@ -185,8 +224,10 @@ def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional
 
         return audio.astype(np.float32)
     except Exception as exc:
-        logger.debug(f"Audio decode failed: {exc}")
+        logger.warning(f"soundfile decode also failed: {exc}")
         return None
+
+
 
 
 # ---------------------------------------------------------------------------
