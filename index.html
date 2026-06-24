@@ -267,7 +267,7 @@
     </div>
   </div>
 
-  <script>
+<script>
   (() => {
     "use strict";
 
@@ -291,16 +291,13 @@
 
     // ── State ─────────────────────────────────────────────────────────
     let ws            = null;
-    let mediaRecorder = null;
     let micStream     = null;
     let totalChunks   = 0;
 
-    // VAD via Web Audio API AnalyserNode (runs client-side, reports dBFS to server)
-    let vadCtx        = null;
-    let vadAnalyser   = null;
-    let vadSource     = null;
-    let vadRafId      = null;
-    let vadBuffer     = null;
+    // Unified Audio processing context for recording and calculations
+    let audioCtx      = null;
+    let scriptNode    = null;
+    let micSource     = null;
 
     // Playback
     let playbackCtx   = null;
@@ -327,7 +324,6 @@
 
     // ── Threshold slider ──────────────────────────────────────────────
     function updateThresholdMarker() {
-      // Map dBFS range [-60, -10] to [0%, 100%] position on the track
       const pct = ((silenceThresholdDb - (-60)) / ((-10) - (-60))) * 100;
       thresholdMarker.style.left = pct + "%";
     }
@@ -336,70 +332,11 @@
       silenceThresholdDb = parseFloat(thresholdSlider.value);
       thresholdValue.textContent = silenceThresholdDb + " dBFS";
       updateThresholdMarker();
-      // Notify server of the new threshold
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "set_threshold", db: silenceThresholdDb }));
       }
     });
     updateThresholdMarker();
-
-    // ── Client-side VAD loop ──────────────────────────────────────────
-    // Computes RMS dBFS from the microphone stream 10× per second and
-    // sends it to the server as {"type":"vad","db":-32.5}.
-    // The server uses this value instead of trying to decode WebM chunks.
-    function startVAD(stream) {
-      vadCtx     = new AudioContext();
-      vadAnalyser = vadCtx.createAnalyser();
-      vadAnalyser.fftSize = 2048;
-      vadBuffer  = new Float32Array(vadAnalyser.fftSize);
-      vadSource  = vadCtx.createMediaStreamSource(stream);
-      vadSource.connect(vadAnalyser);
-
-      let isSpeaking = false;
-
-      function tick() {
-        vadAnalyser.getFloatTimeDomainData(vadBuffer);
-
-        // RMS → dBFS
-        const rms = Math.sqrt(vadBuffer.reduce((s, v) => s + v * v, 0) / vadBuffer.length);
-        const db  = rms > 0 ? 20 * Math.log10(rms) : -100;
-
-        // Update level bar (map -60…0 dBFS to 0…100%)
-        const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
-        levelFill.style.width = pct + "%";
-        levelFill.classList.toggle("loud",     db > silenceThresholdDb);
-        levelFill.classList.toggle("clipping", db > -3);
-
-        // Update dB readout
-        dbReadout.textContent = isFinite(db) ? db.toFixed(1) + " dBFS" : "— dBFS";
-        const speaking = db > silenceThresholdDb;
-        dbReadout.classList.toggle("active",   !speaking && db > -50);
-        dbReadout.classList.toggle("speaking", speaking);
-
-        // Update status dot
-        if (speaking && !isSpeaking) { isSpeaking = true;  setStatus("speaking"); }
-        if (!speaking && isSpeaking) { isSpeaking = false; setStatus("listening"); }
-
-        // Send VAD report to server
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "vad", db: parseFloat(db.toFixed(2)) }));
-        }
-
-        vadRafId = requestAnimationFrame(tick);
-      }
-      tick();
-    }
-
-    function stopVAD() {
-      if (vadRafId) cancelAnimationFrame(vadRafId);
-      vadSource?.disconnect();
-      vadCtx?.close();
-      vadCtx = vadSource = vadAnalyser = vadBuffer = null;
-      vadRafId = null;
-      levelFill.style.width = "0%";
-      dbReadout.textContent = "— dBFS";
-      dbReadout.className   = "db-readout";
-    }
 
     // ── Web Audio playback ────────────────────────────────────────────
     function ensurePlaybackCtx() {
@@ -435,7 +372,6 @@
 
       ws.onopen = () => {
         setStatus("listening");
-        // Send current threshold so server is in sync
         ws.send(JSON.stringify({ type: "set_threshold", db: silenceThresholdDb }));
       };
 
@@ -446,8 +382,6 @@
             if (msg.type === "subtitle") {
               updateSubtitles(msg.en, msg.es);
             }
-            // vad_echo messages are intentionally ignored — the browser already
-            // has the value and uses it for the local meter
           } catch (e) {
             console.warn("[WS] Non-JSON text:", evt.data);
           }
@@ -461,7 +395,7 @@
       ws.onclose  = () => { setStatus("disconnected"); ws = null; };
     }
 
-    // ── MediaRecorder ─────────────────────────────────────────────────
+    // ── Audio Processing & Pipeline ───────────────────────────────────
     async function startCapture() {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
@@ -481,31 +415,70 @@
         return;
       }
 
-      startVAD(micStream);
       connectWebSocket();
 
-      const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"];
-      const mimeType  = mimeTypes.find(t => MediaRecorder.isTypeSupported(t)) || "";
-      mediaRecorder   = new MediaRecorder(micStream, mimeType ? { mimeType } : {});
+      // Setup audio context at native downstream target sample rate (16kHz)
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      micSource = audioCtx.createMediaStreamSource(micStream);
+      
+      // Create processor node (using 4096 buffer size window)
+      scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      
+      let isSpeaking = false;
 
-      mediaRecorder.ondataavailable = (evt) => {
-        if (evt.data?.size > 0 && ws?.readyState === WebSocket.OPEN) {
-          ws.send(evt.data);
-          chunkCount.textContent = `${++totalChunks} chunk${totalChunks !== 1 ? "s" : ""} sent`;
+      scriptNode.onaudioprocess = (audioProcessingEvent) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        const inputBuffer = audioProcessingEvent.inputBuffer;
+        const inputData = inputBuffer.getChannelData(0); // Float32Array Mono
+
+        // 1. Calculate live RMS & dBFS metric locally
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          sum += inputData[i] * inputData[i];
         }
+        const rms = Math.sqrt(sum / inputData.length);
+        const db = rms > 0 ? 20 * Math.log10(rms) : -100;
+
+        // 2. Drive Visuals (UI Meter & Layout updates)
+        const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+        levelFill.style.width = pct + "%";
+        levelFill.classList.toggle("loud",     db > silenceThresholdDb);
+        levelFill.classList.toggle("clipping", db > -3);
+
+        dbReadout.textContent = isFinite(db) ? db.toFixed(1) + " dBFS" : "— dBFS";
+        const speaking = db > silenceThresholdDb;
+        dbReadout.classList.toggle("active",   !speaking && db > -50);
+        dbReadout.classList.toggle("speaking", speaking);
+
+        if (speaking && !isSpeaking) { isSpeaking = true;  setStatus("speaking"); }
+        if (!speaking && isSpeaking) { isSpeaking = false; setStatus("listening"); }
+
+        // 3. Pipe down the pipeline wire: Send raw binary Floats, then send text VAD packet
+        ws.send(inputData.buffer); 
+        ws.send(JSON.stringify({ type: "vad", db: parseFloat(db.toFixed(2)) }));
+        
+        chunkCount.textContent = `${++totalChunks} buffers sent`;
       };
 
-      mediaRecorder.start(100);
+      micSource.connect(scriptNode);
+      scriptNode.connect(audioCtx.destination);
+
       btnStart.disabled = true;
       btnStop.disabled  = false;
     }
 
     function stopCapture() {
-      if (mediaRecorder?.state !== "inactive") { mediaRecorder.stop(); }
-      mediaRecorder = null;
+      if (scriptNode) {
+        scriptNode.disconnect();
+        micSource?.disconnect();
+        audioCtx?.close();
+      }
+      scriptNode = micSource = audioCtx = null;
+
       micStream?.getTracks().forEach(t => t.stop());
       micStream = null;
-      stopVAD();
+
       ws?.close(1000, "User stopped capture.");
       ws            = null;
       btnStart.disabled = false;
@@ -514,6 +487,9 @@
       chunkCount.textContent = "0 chunks sent";
       setStatus("disconnected");
       resetSubtitles();
+      levelFill.style.width = "0%";
+      dbReadout.textContent = "— dBFS";
+      dbReadout.className   = "db-readout";
     }
 
     // ── Subtitles ─────────────────────────────────────────────────────

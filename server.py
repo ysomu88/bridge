@@ -4,6 +4,20 @@ FastAPI + faster-whisper + Ollama + Kokoro-82M
 Target: RTX 3070 Ti (8GB VRAM), Windows 11, uv package manager
 """
 
+import os
+import sys
+
+# Dynamic runtime patching for NVIDIA CUDA DLLs on Windows
+if sys.platform == "win32":
+    venv_base = os.path.join(os.path.dirname(__file__), ".venv", "Lib", "site-packages")
+    cublas_path = os.path.join(venv_base, "nvidia", "cublas", "bin")
+    cudnn_path = os.path.join(venv_base, "nvidia", "cudnn", "bin")
+    
+    if os.path.exists(cublas_path):
+        os.environ["PATH"] = cublas_path + os.pathsep + os.environ["PATH"]
+    if os.path.exists(cudnn_path):
+        os.environ["PATH"] = cudnn_path + os.pathsep + os.environ["PATH"]
+
 import asyncio
 import io
 import json
@@ -155,79 +169,33 @@ class SessionState:
 # ---------------------------------------------------------------------------
 def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional[np.ndarray]:
     """
-    Decode a complete WebM/Opus (or OGG/Opus) buffer → numpy float32 mono @ target_sr.
-    Uses PyAV (FFmpeg) which handles any browser audio container on Windows.
-    Falls back to soundfile if PyAV is unavailable.
-    Returns None if decoding fails or audio is too short.
+    Directly converts raw incoming PCM Float32 bytes from the browser 
+    into a NumPy array, completely bypassing container parsers.
+    
+    The frontend now forces a native 16kHz capture rate, so the incoming 
+    stream aligns perfectly with faster-whisper's requirements.
     """
-    # Log the first 4 bytes so we can see the container format magic bytes
-    magic = raw_bytes[:4].hex() if len(raw_bytes) >= 4 else "??"
-    logger.debug(f"Audio buffer magic bytes: {magic} (1a45dfa3=WebM, 4f676753=OGG)")
-
-    # ── Try PyAV first (FFmpeg-backed, handles WebM/Opus on Windows) ──────
-    try:
-        import av  # type: ignore
-        buf = io.BytesIO(raw_bytes)
-        container = av.open(buf, format=None)  # let FFmpeg auto-detect format
-        frames = []
-        for frame in container.decode(audio=0):
-            frames.append(frame.to_ndarray())
-        if not frames:
-            logger.warning("PyAV decoded 0 frames")
-            return None
-        audio = np.concatenate(frames, axis=-1).mean(axis=0).astype(np.float32)
-        sr = container.streams.audio[0].codec_context.sample_rate
-        container.close()
-
-        if sr != target_sr:
-            ratio = target_sr / sr
-            new_len = int(len(audio) * ratio)
-            audio = np.interp(
-                np.linspace(0, len(audio) - 1, new_len),
-                np.arange(len(audio)),
-                audio,
-            )
-
-        min_samples = int(VAD_MIN_SPEECH_S * target_sr)
-        if len(audio) < min_samples:
-            logger.debug(f"Audio too short: {len(audio)} samples < {min_samples} minimum")
-            return None
-
-        logger.debug(f"PyAV decoded {len(audio)/target_sr:.2f}s of audio at {sr}Hz")
-        return audio.astype(np.float32)
-
-    except ImportError:
-        logger.debug("PyAV not available, falling back to soundfile")
-    except Exception as exc:
-        logger.warning(f"PyAV decode failed: {exc} — falling back to soundfile")
-
-    # ── Fallback: soundfile (works if libsndfile has WebM support) ────────
-    try:
-        buf = io.BytesIO(raw_bytes)
-        audio, sr = sf.read(buf, dtype="float32", always_2d=False)
-
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1)
-
-        if sr != target_sr:
-            ratio = target_sr / sr
-            new_len = int(len(audio) * ratio)
-            audio = np.interp(
-                np.linspace(0, len(audio) - 1, new_len),
-                np.arange(len(audio)),
-                audio,
-            )
-
-        min_samples = int(VAD_MIN_SPEECH_S * target_sr)
-        if len(audio) < min_samples:
-            return None
-
-        return audio.astype(np.float32)
-    except Exception as exc:
-        logger.warning(f"soundfile decode also failed: {exc}")
+    if not raw_bytes:
         return None
 
+    try:
+        # Since the browser sends raw Float32 data directly from the AudioContext,
+        # we can interpret the byte buffer directly into a NumPy array.
+        # We use .copy() to ensure the array owns its memory space for Whisper.
+        audio = np.frombuffer(raw_bytes, dtype=np.float32).copy()
 
+        # Safety check: Ensure the buffer meets the minimum speech length threshold
+        min_samples = int(VAD_MIN_SPEECH_S * target_sr)
+        if len(audio) < min_samples:
+            logger.debug(f"Audio buffer too short: {len(audio)} samples < {min_samples} minimum.")
+            return None
+
+        logger.debug(f"Successfully processed {len(audio)/target_sr:.2f}s of raw PCM audio.")
+        return audio
+
+    except Exception as exc:
+        logger.error(f"❌ Direct raw PCM buffer conversion failed: {exc}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -335,14 +303,22 @@ async def synthesise_and_stream(
 
     def _generate_chunks():
         try:
-            stream = kokoro_pipeline.create(text, voice="af_bella", speed=1.0, lang="es")
-            for samples, sample_rate in stream:
-                yield samples
+            # Unpack the full audio array and sample rate directly from the tuple
+            samples, sample_rate = kokoro_pipeline.create(
+                text, voice="af_bella", speed=1.0, lang="es"
+            )
+            
+            # Slice the full array into smaller windows (e.g., 2400 samples = 100ms blocks at 24kHz)
+            # This allows the downstream executor/WebSocket loop to stream blocks sequentially
+            chunk_size = 2400
+            for i in range(0, len(samples), chunk_size):
+                yield samples[i : i + chunk_size]
+
         except Exception as exc:
             logger.error(f"Kokoro voice synthesis error: {exc}")
             logger.info(
-                "If the error mentions a missing voice, check that 'af_bella' exists "
-                "in voices.json. Available voices vary by kokoro-onnx version."
+                "If the error mentions a missing voice, check your voices.json configuration. "
+                "Available voices vary by kokoro-onnx version."
             )
 
     try:
@@ -353,6 +329,7 @@ async def synthesise_and_stream(
 
     for audio_array in chunks:
         if audio_array is None or len(audio_array) == 0:
+            # If an error occurred inside the generator, it could yield an empty array or stop early
             continue
         pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
         try:
