@@ -1,5 +1,7 @@
 # Bridge — Real-Time Voice Translation
 
+[![CI](https://github.com/ysomu88/bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ysomu88/bridge/actions)
+
 ## 🎤 What is Bridge?
 
 **Bridge** is a local, real-time voice-to-voice translation engine that runs entirely on your local machine. Speak in Spanish and hear your words translated to English instantly — featuring live streaming subtitles, optimized low-latency voice detection, and immediate audio feedback.
