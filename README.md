@@ -8,6 +8,10 @@
 
 No cloud APIs. No subscriptions. 100% private, local compute.
 
+<div align="center">
+  <img src="docs/UI.png" width="600"/>
+</div>
+
 ---
 
 ## ✨ Features
