@@ -1,39 +1,35 @@
 # Bridge — Real-Time Voice Translation
 
-[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org)
-
 ## 🎤 What is Bridge?
 
-**Bridge** is a local, real-time voice-to-voice translation engine that runs entirely on your local machine. Speak in English and hear your words translated to Spanish instantly — featuring live streaming subtitles, optimized low-latency voice detection, and immediate audio feedback.
+**Bridge** is a local, real-time voice-to-voice translation engine that runs entirely on your local machine. Speak in Spanish and hear your words translated to English instantly — featuring live streaming subtitles, optimized low-latency voice detection, and immediate audio feedback.
 
 No cloud APIs. No subscriptions. 100% private, local compute.
-
-<div align="center">
-  <img src="docs/UI.png" width="600"/>
-</div>
 
 ---
 
 ## ✨ Features
 
-- 🎙️ **Real-time translation** — Low end-to-end processing latency.
-- 🚀 **Streamlined Audio Pipeline** — Transmits raw Float32 PCM audio arrays natively over WebSockets directly into NumPy memory arrays at C-speed, eliminating heavy container decoding steps.
-- 📝 **Live subtitles** — English transcription and Spanish translation rendered side by side.
-- 🔊 **Natural voice output** — Ultra-fast inference via `kokoro-onnx` streamed directly back to your browser client.
-- 🎚️ **Optimized VAD Detection** — Configured for natural human conversational pauses (~400-500ms), reducing delivery delay when you finish speaking.
-- 🔒 **100% local** — Zero data leaves your machine.
-- 💻 **Low VRAM footprint** — Fits comfortably on an 8 GB VRAM budget (optimized and tested on an RTX 3070 Ti running Windows 11).
-- 📱 **Mobile-friendly** — Connect any phone or tablet via browser over your Local Area Network (LAN).
-- 🎤 *Additional language support coming soon (only EN/ES available now)*
+* 🎙️ **Real-time translation** — Low end-to-end processing latency.
+* 🚀 **Streamlined Audio Pipeline** — Transmits raw Float32 PCM audio arrays natively over WebSockets directly into NumPy memory arrays at C-speed, eliminating heavy container decoding steps.
+* 📝 **Live subtitles** — Spanish transcription and English translation rendered side by side.
+* 🔊 **Natural voice output** — Ultra-fast inference via `kokoro-onnx` streamed directly back to your browser client.
+* 🎚️ **Optimized VAD Detection** — Configured for natural human conversational pauses (~400-500ms), reducing delivery delay when you finish speaking.
+* 🔒 **100% local** — Zero data leaves your machine.
+* 💻 **Low VRAM footprint** — Fits comfortably on an 8 GB VRAM budget (optimized and tested on an RTX 3070 Ti running Windows 11).
+* 🌐 **Remote Sharing Ready** — Securely tunnel your pipeline to let external clients use your GPU for computing right from their mobile or desktop web browsers.
+* 🎤 *Additional language support coming soon (only ES/EN available now)*
+
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Python 3.12 (Managed via `uv` recommended)
-- NVIDIA GPU with CUDA 12.x runtimes
-- [Ollama](https://ollama.com) installed locally
+* Python 3.12 (Managed via `uv` recommended)
+* NVIDIA GPU with CUDA 12.x runtimes
+* [Ollama](https://ollama.com) installed locally
+* Node.js & npm (for hosting public tunnels via `winget install OpenJS.NodeJS`)
 
 ### 1. Set up the environment
 
@@ -59,30 +55,31 @@ ollama pull llama3.2
 
 ## ⚡ Automation & Execution
 
-You can run the stack using manually separated terminal shells, or launch it with one-click automation profiles.
+You can run the stack using manually separated terminal shells, launch it with one-click automation profiles, or expose it securely to an external user.
 
-### Option A: Native VS Code Task Automation (Recommended)
+### Option A: Hosting for Remote Users (Recommended for External Access)
 
-If developing inside VS Code, a workspace task runner is ready out-of-the-box.
+Browsers block microphone permissions over insecure connections. To let a remote friend open your application and stream their microphone directly into your local GPU pipeline, use the built-in tunnel script:
+
+```powershell
+# Ensure python server.py is running in another terminal window first, then:
+.\run_bridge.ps1
+
+```
+
+*(This automatically grabs your public IP address, copies it to your clipboard to use as the tunnel password, and hosts a secure, customized public endpoint like `https://bridge.loca.lt` so your remote user can connect instantly).*
+
+### Option B: Native VS Code Task Automation
+
+If developing locally inside VS Code, a workspace task runner is ready out-of-the-box.
 
 1. Open the project root folder in VS Code.
 2. Press **`Ctrl + Shift + B`**.
 3. VS Code will spin up a parallel terminal cluster, launch your background Ollama engine, load the `uv` environment, and boot your FastAPI instance concurrently.
 
-### Option B: Local PowerShell Automation Script
+### Option C: Manual Local Launch
 
-For running the stack standalone from a native terminal frame without opening an IDE layout:
-
-```powershell
-.\start.ps1
-
-```
-
-*(This automatically checks your paths, binds Ollama in a separate pipeline, and routes your core FastAPI logs to the current viewport).*
-
-### Option C: Manual Launch
-
-If you prefer managing the terminals independently:
+If you prefer managing the terminals independently for local testing:
 
 ```powershell
 # Terminal 1: Background Engine
@@ -118,19 +115,22 @@ Watch the **Mic Level** meter while remaining completely silent. The signal shou
 | --- | --- |
 | `server.py` | FastAPI Asynchronous Backend — WebSocket lifecycle, Faster-Whisper STT, Ollama API translation interface, `kokoro-onnx` TTS pipeline. |
 | `index.html` | Client Interface — Native HTML5 Audio capture, raw PCM stream conversion, live VAD monitoring, side-by-side subtitle render matrix. |
-| `start.ps1` | Native PowerShell cluster bootstrapper. |
+| `run_bridge.ps1` | Native PowerShell reverse-tunnel automation script (handles IP clipboard capture and custom `localtunnel` parameters). |
 | `.vscode/tasks.json` | Project-scoped background build task orchestrator. |
 | `requirements.txt` | Explicit Python tracking matrix (`uv` optimized). |
-| `.gitignore` | Configured to track collaborative shared environments (`tasks.json`) while securely blocking local model blobs (`*.onnx`, `*.bin`) and active virtual environments. |
+| `.gitignore` | Securely blocks local model blobs (`*.onnx`, `*.bin`), user variables (`.env`, `.secrets`), and your local workspace caching states (`.vscode/` tracking overrides). |
 
 ---
 
 ## 🔧 Troubleshooting
 
 **"The system ignores or clips my speech mid-sentence"**
-→ Your `VAD_SILENCE_TIMEOUT_S` configuration in `server.py` may be set tighter than your natural breathing cadences. Try resetting the constant closer to human baseline breathing loops (`0.4` or `0.5` seconds) to balance speech continuity with speed.
+→ Your VAD configurations in `server.py` may be set tighter than your natural breathing cadences. Try resetting the trailing silence evaluation constants closer to human baseline breathing loops (`0.4` or `0.5` seconds) to balance speech continuity with speed.
 
-**"The term '.\start.ps1' is not recognized..."**
+**"The tunnel drops incoming audio streams or errors out when a second user connects"**
+→ The application enforces an asynchronous execution lock (`processing_lock = asyncio.Lock()`) to protect your 8GB VRAM envelope from race conditions. Only one utterance can pass through the GPU pipeline at a time. Consecutive overlapping streams from concurrent users will be dropped or queued until the lock clears.
+
+**"The term '.\run_bridge.ps1' is not recognized..."**
 → If Windows blocks script execution due to localized execution profiles, run this single assignment command in your PowerShell terminal frame to permit local runtime execution:
 
 ```powershell
@@ -140,6 +140,3 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 
 **"Ollama not reachable"**
 → Ensure the Ollama background host engine is executing. Run `ollama run llama3.2` to verify local availability.
-
-**"CUDA/cuBLAS runtime DLL execution errors on Windows"**
-→ The environment targets CUDA 12 runtimes natively. If you encounter missing library logs during heavy STT transcribing operations, confirm that `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` loaded cleanly from your `requirements.txt` validation pass.
