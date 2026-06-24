@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          .venv
+          ~/.cache/uv
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        uv venv .venv --python 3.12
+        source .venv/bin/activate
+        uv pip install -r requirements.txt
+    
+    - name: Verify installation
+      run: |
+        source .venv/bin/activate
+        python --version
+        pip list
+    
+    - name: Run tests (if tests exist)
+      run: |
+        source .venv/bin/activate
+        if [ -f "tests/test_*.py" ]; then
+          pytest
+        else
+          echo "No tests found - skipping test step"
+        fi
+    
+    - name: Check for linting issues
+      run: |
+        source .venv/bin/activate
+        if [ -f "pyproject.toml" ]; then
+          uv pip install ruff
+          ruff check .
+        fi
