@@ -226,8 +226,13 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     if not text.strip():
         return ""
 
-    src_name = "English" if source_lang == "en" else "Spanish"
-    tgt_name = "Spanish" if target_lang == "es" else "English"
+    LANGUAGE_NAMES = {
+        "en": "English", "es": "Spanish", "fr": "French",
+        "it": "Italian", "ja": "Japanese", "zh": "Chinese",
+        "ko": "Korean",  "pt": "Portuguese",
+    }
+    src_name = LANGUAGE_NAMES.get(source_lang, source_lang.upper())
+    tgt_name = LANGUAGE_NAMES.get(target_lang, target_lang.upper())
 
     system_prompt = (
         "You are a silent, professional real-time translator. "
@@ -300,9 +305,18 @@ async def synthesise_and_stream(
 
     loop = asyncio.get_running_loop()
     
-    # Configure language-specific synthesis engines dynamically
-    voice_code = "af_bella" # Standard cross-lingual fallback profile
-    kokoro_lang = "es" if target_lang == "es" else "en-us"
+    # Kokoro language codes and default voices per language
+    KOKORO_LANG_MAP = {
+        "en": ("en-us", "af_heart"),
+        "es": ("es",    "ef_dora"),
+        "fr": ("fr-fr", "ff_siwis"),
+        "it": ("it",    "if_sara"),
+        "ja": ("ja",    "jf_alpha"),
+        "zh": ("zh",    "zf_xiaobei"),
+        "ko": ("ko",    "kf_alpha"),
+        "pt": ("pt-br", "pf_dora"),
+    }
+    kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
 
     def _generate_chunks():
         try:
