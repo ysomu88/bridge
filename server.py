@@ -220,7 +220,7 @@ async def transcribe(audio: np.ndarray, source_lang: str) -> str:
         return " ".join(seg.text.strip() for seg in segments).strip()
 
     text = await loop.run_in_executor(None, _run)
-    logger.info(f"📝 Transcript ({source_lang}): {text!r}")
+    # logger.info(f"📝 Transcript ({source_lang}): {text!r}")
     return text
 
 
@@ -409,7 +409,7 @@ async def ws_stream(websocket: WebSocket):
             logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript.")
             return
 
-        logger.info(f"[{session_id}] 🔄 Translating: {original_text!r}")
+        logger.info(f"[{session_id}] 🔄 Translating now")
         translated_text = await translate_text(original_text, state.source_lang, state.target_lang)
         if not translated_text:
             logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
