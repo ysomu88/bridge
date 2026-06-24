@@ -73,7 +73,7 @@ Browsers block microphone permissions over insecure connections. To let a remote
 
 ```
 
-*(This automatically grabs your public IP address, copies it to your clipboard to use as the tunnel password, and hosts a secure, customized public endpoint like `https://bridge.loca.lt` so your remote user can connect instantly).*
+*(This hosts a secure, customized public endpoint at [https://bridge.loca.lt](https://bridge.loca.lt) so your remote user can connect instantly).*
 
 ### Option B: Native VS Code Task Automation
 
