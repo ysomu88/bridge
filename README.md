@@ -21,13 +21,10 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 
 * 🎙️ **Real-time translation** — Low end-to-end processing latency.
 * 🚀 **Streamlined Audio Pipeline** — Transmits raw Float32 PCM audio arrays natively over WebSockets directly into NumPy memory arrays at C-speed, eliminating heavy container decoding steps.
-* 📝 **Live subtitles** — Spanish transcription and English translation rendered side by side.
+* 📝 **Live subtitles** — Spanish transcription and English translation rendered side by side. *Additional language support coming soon (only ES/EN available now)*
 * 🔊 **Natural voice output** — Ultra-fast inference via `kokoro-onnx` streamed directly back to your browser client.
-* 🎚️ **Optimized VAD Detection** — Configured for natural human conversational pauses (~400-500ms), reducing delivery delay when you finish speaking.
-* 🔒 **100% local** — Zero data leaves your machine.
 * 💻 **Low VRAM footprint** — Fits comfortably on an 8 GB VRAM budget (optimized and tested on an RTX 3070 Ti running Windows 11).
 * 🌐 **Remote Sharing Ready** — Securely tunnel your pipeline to let external clients use your GPU for computing right from their mobile or desktop web browsers.
-* 🎤 *Additional language support coming soon (only ES/EN available now)*
 
 ---
 
