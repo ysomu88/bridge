@@ -29,7 +29,6 @@ from typing import Optional
 
 import httpx
 import numpy as np
-import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -127,7 +126,7 @@ app = FastAPI(title="Bridge", lifespan=lifespan)
 # If you're getting false triggers from background noise, raise this value.
 # Typical speech is around -20 to -10 dBFS. A quiet room idles at -50 to -40.
 VAD_SILENCE_DB: float = -30.0       # dBFS below which we call it silence
-VAD_SILENCE_DURATION_S: float = 0.8 # seconds of silence before triggering
+VAD_SILENCE_DURATION_S: float = 0.5 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
 
 
