@@ -23,7 +23,7 @@ __pycache__/
 .idea/
 
 # Track the team workspace task profiles, but ignore personal workspace states
-.vscode/tasks.json
+.vscode/
 
 # -- OS SPECIFIC FILES (Windows / macOS) --
 Thumbs.db
@@ -35,5 +35,5 @@ TECHNICAL_WALKTHROUGH.md
 docs/*
 
 # -- Launch Scripts --
-!start_bridge.bat
+!start.bat
 run_bridge.ps1
