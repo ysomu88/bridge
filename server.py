@@ -7,16 +7,26 @@ Target: RTX 3070 Ti (8GB VRAM), Windows 11, uv package manager
 import os
 import sys
 
-# Dynamic runtime patching for NVIDIA CUDA DLLs on Windows
+# Dynamic runtime patching for NVIDIA CUDA DLLs and espeak-ng on Windows
 if sys.platform == "win32":
     venv_base = os.path.join(os.path.dirname(__file__), ".venv", "Lib", "site-packages")
     cublas_path = os.path.join(venv_base, "nvidia", "cublas", "bin")
     cudnn_path = os.path.join(venv_base, "nvidia", "cudnn", "bin")
-    
+
     if os.path.exists(cublas_path):
         os.environ["PATH"] = cublas_path + os.pathsep + os.environ["PATH"]
     if os.path.exists(cudnn_path):
         os.environ["PATH"] = cudnn_path + os.pathsep + os.environ["PATH"]
+
+    # espeak-ng — required by kokoro-onnx for non-English phonemization
+    # (Chinese, Hindi, Japanese, French, etc.)
+    espeak_dir = r"C:\Program Files\eSpeak NG"
+    espeak_dll = os.path.join(espeak_dir, "libespeak-ng.dll")
+    espeak_exe = os.path.join(espeak_dir, "espeak-ng.exe")
+    if os.path.exists(espeak_dll):
+        os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = espeak_dll
+        os.environ["PHONEMIZER_ESPEAK_PATH"]    = espeak_exe
+        os.environ["PATH"] = espeak_dir + os.pathsep + os.environ["PATH"]
 
 import asyncio
 import io
@@ -120,7 +130,7 @@ app = FastAPI(title="Bridge", lifespan=lifespan)
 # VAD configuration (tunable without restarting)
 # ---------------------------------------------------------------------------
 VAD_SILENCE_DB: float = -40.0       # dBFS below which we call it silence
-VAD_SILENCE_DURATION_S: float = 0.1 # seconds of silence before triggering
+VAD_SILENCE_DURATION_S: float = 0.5 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
 
 
@@ -229,7 +239,7 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     LANGUAGE_NAMES = {
         "en": "English", "es": "Spanish", "fr": "French",
         "it": "Italian", "ja": "Japanese", "zh": "Chinese",
-        "ko": "Korean",  "pt": "Portuguese",
+        "ko": "Korean",  "pt": "Portuguese", "hi": "Hindi",
     }
     src_name = LANGUAGE_NAMES.get(source_lang, source_lang.upper())
     tgt_name = LANGUAGE_NAMES.get(target_lang, target_lang.upper())
@@ -312,10 +322,17 @@ async def synthesise_and_stream(
         "fr": ("fr-fr", "ff_siwis"),
         "it": ("it",    "if_sara"),
         "ja": ("ja",    "jf_alpha"),
-        "zh": ("zh",    "zf_xiaobei"),
-        "ko": ("ko",    "kf_alpha"),
+        "zh": ("cmn",   "zf_xiaobei"),  # espeak uses 'cmn' for Mandarin, not 'zh'
+        "hi": ("hi",    "hf_alpha"),
         "pt": ("pt-br", "pf_dora"),
     }
+    # Korean has no voice in this kokoro-onnx build — subtitles only until Piper is added
+    KOKORO_UNSUPPORTED = {"ko"}
+
+    if target_lang in KOKORO_UNSUPPORTED:
+        logger.warning(f"TTS not available for '{target_lang}' in this kokoro-onnx version — subtitles only.")
+        return
+
     kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
 
     def _generate_chunks():

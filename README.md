@@ -17,11 +17,11 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 ## ✨ Features
 
 - 🎙️ **Real-time translation** — Low end-to-end processing latency
-- 🌍 **8 languages supported** — English, Spanish, French, Italian, Japanese, Chinese, Korean, Portuguese — with more coming
+- 🌍 **9 languages supported** — English, Spanish, French, Italian, Japanese, Chinese, Hindi, Korean, and Portuguese
 - 🔄 **Any direction** — Pick source and target from dropdowns, swap with one click
 - 🚀 **Streamlined audio pipeline** — Raw Float32 PCM sent directly over WebSocket into NumPy, no container decoding overhead
 - 📝 **Live subtitles** — Source and translation rendered side by side, updating in real time
-- 🔊 **Natural voice output** — Ultra-fast inference via `kokoro-onnx` streamed back to your browser
+- 🔊 **Natural voice output** — Ultra-fast TTS streamed back to your browser
 - 💻 **Low VRAM footprint** — Fits comfortably on 8 GB VRAM (tested on RTX 3070 Ti, Windows 11)
 - 🌐 **Remote sharing ready** — Tunnel your pipeline so external users can connect from any browser
 
@@ -37,10 +37,11 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 | 🇮🇹 Italian | ✅ | ✅ | ✅ |
 | 🇯🇵 Japanese | ✅ | ✅ | ✅ |
 | 🇨🇳 Chinese | ✅ | ✅ | ✅ |
-| 🇰🇷 Korean | ✅ | ✅ | ✅ |
+| 🇮🇳 Hindi | ✅ | ✅ | ✅ |
 | 🇧🇷 Portuguese | ✅ | ✅ | ✅ |
+| 🇰🇷 Korean | ✅ | ✅ | 🔜 |
 
-> German, Hindi, and Telugu coming in a future release.
+> Korean voice output, German, and Telugu are coming in a future release.
 
 ---
 
@@ -51,6 +52,7 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 - Python 3.12 (managed via `uv`)
 - NVIDIA GPU with CUDA 12.x drivers
 - [Ollama](https://ollama.com) installed locally
+- [eSpeak NG](https://github.com/espeak-ng/espeak-ng/releases/latest) installed (required for non-English voice output)
 - Node.js & npm (for remote tunnel via `winget install OpenJS.NodeJS`)
 
 ### 1. Set up the environment
@@ -138,6 +140,9 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 
 **Translation never triggers after I stop speaking**
 → Drag the Silence threshold slider right until background noise sits below the marker line. See the tuning table above.
+
+**No voice output for non-English languages**
+→ Install [eSpeak NG](https://github.com/espeak-ng/espeak-ng/releases/latest) (download the `-x64.msi` file and run with default settings), then restart the server.
 
 **"Ollama not reachable"**
 → Run `ollama serve` in a separate terminal before starting the server.
