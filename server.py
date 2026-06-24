@@ -130,7 +130,7 @@ app = FastAPI(title="Bridge", lifespan=lifespan)
 # VAD configuration (tunable without restarting)
 # ---------------------------------------------------------------------------
 VAD_SILENCE_DB: float = -40.0       # dBFS below which we call it silence
-VAD_SILENCE_DURATION_S: float = 0.5 # seconds of silence before triggering
+VAD_SILENCE_DURATION_S: float = 0.3 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
 
 
