@@ -2,31 +2,25 @@
 name = "bridge"
 version = "0.1.0"
 description = "Bridge — Local real-time voice-to-voice translation: Whisper + Ollama + Kokoro-82M"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 dependencies = [
-    # ── Web framework ──────────────────────────────────────────
+    # ── Web Framework & Streaming Networking ───────────────────
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
     "websockets>=12.0",
-    # ── STT ────────────────────────────────────────────────────
-    # faster-whisper ships CTranslate2; install the CUDA variant
-    # by running: uv add faster-whisper --extra cuda
+    
+    # ── Speech-to-Text (STT) ───────────────────────────────────
     "faster-whisper>=1.0.3",
-    # ── Audio I/O ──────────────────────────────────────────────
-    "soundfile>=0.12.1",   # WebM/Opus decode via libsndfile
+    
+    # ── Core Math & Array I/O (Zero-Copy Processing) ───────────
     "numpy>=1.26.0",
-    # ── Optional: better resampling (fallback to numpy if absent)
-    # "resampy>=0.4.3",
-    # ── Translation ────────────────────────────────────────────
-    "httpx>=0.27.0",       # async Ollama REST calls
-    # Alternative: "ollama>=0.2.0"
-    # ── TTS ────────────────────────────────────────────────────
-    # Install one of:
-    #   uv add kokoro-onnx          (ONNX runtime, easiest on Windows)
-    #   uv add kokoro               (PyTorch, higher quality)
-    # "kokoro-onnx>=0.4.0",
-    "kokoro-onnx>=0.5.0",
+    
+    # ── Translation Async Layer ────────────────────────────────
+    "httpx>=0.27.0",       # Lightweight non-blocking Ollama REST API calls
+    
+    # ── Text-to-Speech (TTS) ───────────────────────────────────
+    "kokoro-onnx>=0.5.0",  # High-efficiency, low-VRAM static graph runtime
 ]
 
 [build-system]
@@ -37,7 +31,7 @@ build-backend = "hatchling.build"
 packages = ["."]
 
 [tool.uv]
-# Windows-specific CUDA override for faster-whisper / CTranslate2
-# After `uv sync`, run:
-#   pip install ctranslate2 --index-url https://download.pytorch.org/whl/cu121
+# Windows-specific CUDA configuration alignment framework
+# After initialization run sync, then resolve localized CUDA 12 runtimes via:
+#   pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.org/whl/cu121
 index-url = "https://pypi.org/simple"

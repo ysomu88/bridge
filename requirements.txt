@@ -12,7 +12,6 @@ httpx>=0.27.0
 
 # ── Audio Core & Data Structures ──────────────────────────────────────────────
 numpy>=1.26.0
-# soundfile>=0.12.1     # Removed: Frontend handles raw Float32 PCM streaming directly
 
 # ── STT (Speech-to-Text) ─────────────────────────────────────────────────────
 faster-whisper>=1.0.3
