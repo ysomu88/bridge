@@ -36,3 +36,4 @@ docs/*
 
 # -- Launch Scripts --
 !start_bridge.bat
+run_bridge.ps1
