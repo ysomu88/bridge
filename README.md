@@ -8,6 +8,10 @@
 
 No cloud APIs. No subscriptions. 100% private, local compute.
 
+<div align="center">
+  <img src="docs/UI.png" width="600"/>
+</div>
+
 ---
 
 ## ✨ Features
@@ -20,7 +24,7 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 - 🔒 **100% local** — Zero data leaves your machine.
 - 💻 **Low VRAM footprint** — Fits comfortably on an 8 GB VRAM budget (optimized and tested on an RTX 3070 Ti running Windows 11).
 - 📱 **Mobile-friendly** — Connect any phone or tablet via browser over your Local Area Network (LAN).
-
+- 🎤 *Additional language support coming soon (only EN/ES available now)*
 ---
 
 ## 🚀 Quick Start
