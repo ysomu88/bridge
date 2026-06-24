@@ -1,74 +1,85 @@
 # Bridge — Architecture & Technical Reference
 
-**Stack:** faster-whisper (es) · Ollama (llama3.2) · Kokoro-82M ONNX (en-us)
-**Target:** RTX 3070 Ti (8 GB VRAM) · Windows 11 · `uv` package manager · `localtunnel` Secure Ingress
+**Stack:** faster-whisper · Ollama (llama3.2) · Kokoro-82M ONNX · eSpeak NG
+**Target:** RTX 3070 Ti (8 GB VRAM) · Windows 11 · `uv` package manager · `localtunnel` for remote access
 
 ---
 
 ## Architecture
 
-```text
-Browser mic (Raw Float32 PCM Stream)
+```
+Browser mic (Raw Float32 PCM stream)
         │
-        ├─ VAD: AnalyserNode → RMS dBFS → {"type":"vad","db":-28.3}
+        ├─ VAD: ScriptProcessorNode → RMS dBFS → {"type":"vad","db":-28.3}
         │
-        │  WebSocket /ws/stream  (Binary PCM + JSON Text frames)
+        │  WebSocket /ws/stream  (binary PCM + JSON text frames)
         ▼
   [FastAPI server.py]
         │
-        ├─ Concurrency Fence: processing_lock = asyncio.Lock() (Protects 8GB VRAM allocation)
-        ├─ VAD gate: silence threshold (default -35 dBFS, user-adjustable)
-        │        └─ 500 ms consecutive silence → trigger pipeline (Physiological breath-tuned)
+        ├─ VAD gate: silence threshold (default -40 dBFS, user-adjustable per session)
+        │       └─ 500 ms consecutive silence → trigger pipeline
         │
-        ├─ faster-whisper "base" (CUDA int8, <350 MB VRAM, language forced to "es")
-        │        └─ Silero VAD filter (second-pass cleanup)
+        ├─ faster-whisper "base" (CUDA int8, <350 MB VRAM)
+        │       └─ Silero VAD filter (second-pass cleanup)
+        │       └─ Language: set from WebSocket query param (?source=en&target=es)
         │
         ├─ Ollama → llama3.2 (3B, Q4, ~2.0 GB VRAM)
-        │        └─ strict system prompt: ES → EN only, zero conversational preamble
+        │       └─ Dynamic system prompt: "translate {src_language} to {tgt_language}"
         │
-        └─ Kokoro-82M ONNX (CUDA, ~250 MB VRAM) → English raw chunk streams
-                 └─ websocket.send_bytes() → Gapless Web Audio Scheduling → speaker
-
+        └─ Kokoro-82M ONNX + eSpeak NG phonemizer → raw int16 PCM chunks
+                └─ Language routed via KOKORO_LANG_MAP
+                └─ websocket.send_bytes() → Web Audio API → speaker
 ```
 
-### Why Raw Float32 PCM Streams? (Zero-Container Ingestion)
+### Why Raw Float32 PCM?
 
-In legacy iterations, audio chunks were packaged into heavy WebM/Opus containers via the browser's `MediaRecorder`. This introduced massive overhead because WebM blobs cannot be decoded in isolation without initialized header meta-frames.
+Early versions sent WebM/Opus container chunks via `MediaRecorder`. Individual WebM chunks cannot be decoded in isolation — they depend on codec headers that only exist in the first chunk, so server-side energy measurement always failed.
 
-The optimized pipeline bypasses containers entirely. The client extracts raw floating-point data directly out of the microphone hardware track using the browser's Web Audio API.
+The current pipeline bypasses containers entirely. The browser's `ScriptProcessorNode` extracts raw float32 PCM directly from the microphone hardware track and sends it over the WebSocket. The server reconstructs the audio array with `np.frombuffer(data, dtype=np.float32)` — no decoder, no file parsing, minimal latency.
 
-* **Zero-Decoder Extraction:** Raw arrays are sent straight across the WebSocket every 100 milliseconds.
-* **C-Speed Memory Mapping:** The server uses `np.frombuffer(binary_message, dtype=np.float32)` to reconstruct data vectors in place at C-speed. This completely strips out third-party disk-bound or file-descriptor parsing engines like `soundfile`, drastically lowering pipeline latency.
+---
+
+## Supported Languages
+
+| Language | STT Code | Kokoro Lang | Kokoro Voice | Notes |
+|---|---|---|---|---|
+| English | `en` | `en-us` | `af_heart` | |
+| Spanish | `es` | `es` | `ef_dora` | |
+| French | `fr` | `fr-fr` | `ff_siwis` | Requires eSpeak NG |
+| Italian | `it` | `it` | `if_sara` | Requires eSpeak NG |
+| Japanese | `ja` | `ja` | `jf_alpha` | Requires eSpeak NG |
+| Chinese | `zh` | `cmn` | `zf_xiaobei` | espeak lang code is `cmn`, not `zh` |
+| Hindi | `hi` | `hi` | `hf_alpha` | Requires eSpeak NG |
+| Portuguese | `pt` | `pt-br` | `pf_dora` | Requires eSpeak NG |
+| Korean | `ko` | — | — | STT + translation only; TTS coming in future release |
 
 ---
 
 ## VRAM Budget (RTX 3070 Ti, 8 GB)
 
 | Component | VRAM |
-| --- | --- |
-| `faster-whisper` base (int8) | ~350 MB |
-| `Kokoro-82M` (ONNX CUDA) | ~250 MB |
-| Ollama `llama3.2` (3B, Q4) | ~2.0 GB |
-| OS / display / desktop overhead | ~0.6 GB |
-| **Total Allocation Envelope** | **~3.2 GB** ✅ |
-
-### Memory Guard & Concurrency Control
-
-Because the stack runs comfortably inside standard graphics memory allocations, resource exhaustion is protected via an internal cooperative mutex fence: `processing_lock = asyncio.Lock()`. If multiple clients speak at the same time, the server triggers an early return for colliding requests, dropping overlapping noise spikes instead of backing them up in an execution queue. This strictly protects your local GPU from VRAM thrashing or allocation page faults.
+|---|---|
+| faster-whisper base (int8) | ~350 MB |
+| Kokoro-82M (ONNX) | ~250 MB |
+| Ollama llama3.2 (3B, Q4) | ~2.0 GB |
+| OS / display / overhead | ~0.6 GB |
+| **Total** | **~3.2 GB** ✅ |
 
 ---
 
 ## Configuration Reference
 
 | Setting | Location | Default |
-| --- | --- | --- |
-| Silence threshold (dBFS) | `server.py` → `VAD_SILENCE_DB` | -35.0 |
-| Silence duration before trigger | `server.py` → `VAD_SILENCE_TIMEOUT_S` | 0.5 s |
-| Transcription Target Language | `server.py` → `whisper_model.transcribe(..., language="es")` | `es` (Spanish) |
-| Translation Platform Engine | `server.py` → `OLLAMA_MODEL` | `llama3.2` |
-| TTS Target System Voice | `server.py` → `kokoro_pipeline.create(..., voice="af_bella", lang="en-us")` | `en-us` (English) |
-| Client Ingestion Sample Rate | `index.html` → `navigator.mediaDevices.getUserMedia` | 16000 Hz |
-| Client Audio Playback Sample Rate | `index.html` → `playbackCtx = new AudioContext(...)` | 24000 Hz |
+|---|---|---|
+| Silence threshold (dBFS) | `server.py` → `VAD_SILENCE_DB` | -40.0 |
+| Silence duration before trigger | `server.py` → `VAD_SILENCE_DURATION_S` | 0.5 s |
+| Minimum speech length | `server.py` → `VAD_MIN_SPEECH_S` | 0.3 s |
+| Ollama model | `server.py` → `OLLAMA_MODEL` | `llama3.2` |
+| Whisper model size | `server.py` → `WhisperModel(...)` | `base` |
+| eSpeak NG path (Windows) | `server.py` → Windows startup block | `C:\Program Files\eSpeak NG` |
+| TTS sample rate | `index.html` → `SAMPLE_RATE` | 24000 Hz |
+
+The silence threshold can be adjusted live via the slider in the browser UI without restarting. Each WebSocket session maintains its own threshold.
 
 ---
 
@@ -76,84 +87,72 @@ Because the stack runs comfortably inside standard graphics memory allocations, 
 
 ### Browser → Server
 
-| Frame Type | Format | Purpose |
-| --- | --- | --- |
-| Binary | Raw Float32 PCM Stream | 100ms streaming voice buffer frame |
-| Text JSON | `{"type":"vad","db":-28.3}` | Native browser client RMS energy metric |
-| Text JSON | `{"type":"set_threshold","db":-30}` | Real-time live dynamic slider synchronization |
+| Frame type | Format | Purpose |
+|---|---|---|
+| Binary | Raw float32 PCM (16 kHz mono) | Audio chunk (~256 ms at 4096 buffer size) |
+| Text JSON | `{"type":"vad","db":-28.3}` | RMS energy of current chunk |
+| Text JSON | `{"type":"set_threshold","db":-30}` | Update silence threshold for this session |
 
 ### Server → Browser
 
-| Frame Type | Format | Purpose |
-| --- | --- | --- |
-| Text JSON | `{"type":"subtitle","es":"...","en":"..."}` | Side-by-side translation subtitle text block |
-| Binary | Raw Signed Int16 PCM @ 24 kHz | Native sequential TTS synthesizer voice stream |
+| Frame type | Format | Purpose |
+|---|---|---|
+| Text JSON | `{"type":"subtitle","src":"...","tgt":"...","en":"...","es":"..."}` | Transcription + translation |
+| Binary | Raw int16 PCM @ 24 kHz | TTS audio chunk |
 
 ---
 
-## Installation & Deployment
+## eSpeak NG on Windows
 
-### Prerequisites
+Kokoro-82M uses `phonemizer` under the hood to convert text to phonemes before synthesis. For non-English languages, `phonemizer` requires the eSpeak NG shared library (`libespeak-ng.dll`) to be present on the system.
 
-| Tool / Runtime | Deployment Target Link |
-| --- | --- |
-| Python 3.12 | https://www.python.org |
-| `uv` Package Engine | Installed globally (`pip install uv`) |
-| CUDA 12.x Core Suite | NVIDIA Studio / Game Ready Run-times |
-| Node.js & npm | `winget install OpenJS.NodeJS` (Required for remote tunnels) |
-| Ollama Daemon | Core local installer architecture |
+`server.py` sets the required environment variables automatically at startup:
 
-### Execution Workflow
-
-```powershell
-# 1. Populate the localized Ollama weight cache
-ollama pull llama3.2
-
-# 2. Build local python sandbox environment via uv
-uv venv .venv --python 3.12
-.\.venv\Scripts\Activate.ps1
-uv pip install -r requirements.txt
-
-# 3. Boot application core backend
-python server.py
-
-# 4. Optional: Expose endpoint to external users over HTTPS/WSS
-.\run_bridge.ps1
-
+```python
+os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
+os.environ["PHONEMIZER_ESPEAK_PATH"]    = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
 ```
 
+These must be set **before** any phonemizer imports, which is why they live at the very top of `server.py` before any other imports.
+
+If eSpeak NG is installed to a non-default path, update these two lines accordingly.
+
 ---
 
-## Remote Access Automation (Hosting for Others)
+## Concurrency Model
 
-Browsers enforce strict client security layer protections (`navigator.mediaDevices.getUserMedia`), instantly disabling mic recording pipelines on any standard unencrypted `http://` domain that is not explicitly evaluated as `localhost`.
+Bridge uses Python's `asyncio` for concurrency — a single thread, single event loop. CPU-bound work (Whisper inference, audio decode) runs in a thread pool via `run_in_executor`. The Ollama HTTP call is natively async via `httpx.AsyncClient`.
 
-To host the application from your machine for an external browser user, you must run a secure TLS proxy tunnel. Bridge includes a customized automation script `run_bridge.ps1` that wraps over `localtunnel` to streamline this configuration:
+A per-session `processing_lock` prevents race conditions when two silence triggers fire close together:
 
-1. **Keep `python server.py` running** in its initial workspace frame.
-2. Open a separate PowerShell console window and invoke the deployment script: `.\run_bridge.ps1`.
-3. The script automatically fetches your public WAN IP address, drops it directly into your clipboard, and exposes a clean public link (e.g., `https://bridge.loca.lt`).
-4. **Share with your user:** Send them the URL link and paste your IP address. The user submits the IP as the entry password on the anti-phishing protection landing screen, and the application safely proxies secure WebSockets (`wss://`) back to your GPU hardware layer.
+```python
+async def process_utterance():
+    if processing_lock.locked():
+        return  # drop duplicate trigger
+    async with processing_lock:
+        raw = state.get_buffer_bytes()
+        state.flush_buffer()
+```
+
+Each WebSocket connection gets its own `SessionState` — isolated audio buffer, VAD state, language pair, and silence threshold. Multiple devices can connect simultaneously and each runs an independent pipeline.
 
 ---
 
 ## Troubleshooting
 
-### Translation never triggers after speaking
+### No voice output for non-English languages
+Install eSpeak NG from https://github.com/espeak-ng/espeak-ng/releases/latest (`.msi` for Windows), then restart the server. The server sets the required env vars automatically — no manual configuration needed.
 
-* Check the **Mic Level** UI visualizer bar while keeping your room silent. The incoming audio line must drop entirely below the threshold marker point for the server silence duration countdown to start.
-* Drag the **Silence threshold** slider rightward (less negative, e.g., to `-28`) until ambient desk fans or background hums drop completely below the trigger marker line.
+### Chinese TTS not working
+The espeak lang code for Mandarin is `cmn`, not `zh`. This is already handled in `KOKORO_LANG_MAP` but worth knowing if you're debugging phonemizer errors directly.
 
-### "npx: term is not recognized" when initializing tunnels
+### "Ollama not reachable at localhost:11434"
+Run `ollama serve` in a separate terminal before starting the server.
 
-* Node.js is missing or path variables are not loaded. Run `winget install OpenJS.NodeJS`, close out your PowerShell windows completely, and start a fresh terminal frame to register the node system execution parameters.
-
-### No audio playback output in remote browser
-
-* Ensure the user explicitly clicks anywhere on the client dashboard interface page first. Modern desktop and mobile browsers enforce absolute autoplay restrictions that prevent programmatic audio rendering streams until a manual user gesture activates the playback audio context.
-
-### CUDA or cuBLAS runtime initialization errors
-
-* The underlying transcription engine targets CUDA 12 runtimes natively on Windows. If initialization fails, run this command inside your activated environment to force the underlying CTranslate2 layer libraries to synchronize with your system drivers:
+### CUDA not detected for Whisper
 ```powershell
-pip install ctranslate2 --force-reinstall --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
+pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.org/whl/cu121
+```
+
+### Translation never triggers
+Background noise floor is above the silence threshold. Watch the Mic Level bar while silent — it should sit below the marker. Drag the Silence threshold slider right until it does.
