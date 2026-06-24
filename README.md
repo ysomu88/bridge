@@ -1,8 +1,3 @@
-Here is the updated `README.md` file. It incorporates our environment optimization (`Python 3.12 (uv)`), the streamlined raw float32 PCM streaming logic, the lower default VAD latency tuning, and the newly added local automation workflows (VS Code tasks and `start.ps1`).
-
----
-
-```markdown
 # Bridge — Real-Time Voice Translation
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org)
@@ -144,7 +139,3 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 
 **"CUDA/cuBLAS runtime DLL execution errors on Windows"**
 → The environment targets CUDA 12 runtimes natively. If you encounter missing library logs during heavy STT transcribing operations, confirm that `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` loaded cleanly from your `requirements.txt` validation pass.
-
-```
-
-```
