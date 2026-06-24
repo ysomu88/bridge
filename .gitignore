@@ -27,3 +27,6 @@ __pycache__/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# -- Other --
+TECHNICAL_WALKTHROUGH.md

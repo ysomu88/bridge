@@ -1,185 +1,171 @@
-"# Bridge — Local Real-Time Voice-to-Voice Translation
+# Bridge — Architecture & Technical Reference
 
-**Stack:** faster-whisper · Ollama (OmniCoder-2-9B) · Kokoro-82M  
+**Stack:** faster-whisper · Ollama (llama3.2) · Kokoro-82M ONNX
+**Target:** RTX 3070 Ti (8 GB VRAM) · Windows 11 · `uv` package manager
 
 ---
 
-## Architecture at a glance
+## Architecture
 
 ```
 Browser mic (100 ms WebM chunks)
-        │  WebSocket /ws/stream
+        │
+        ├─ VAD: AnalyserNode → RMS dBFS → {"type":"vad","db":-28.3}
+        │
+        │  WebSocket /ws/stream  (binary + JSON text frames)
         ▼
   [FastAPI server.py]
         │
-        ├─ faster-whisper "base" (CUDA int8, <1 GB VRAM)
-        │       └─ Silero VAD → 500 ms silence boundary
+        ├─ VAD gate: silence threshold (default -35 dBFS, user-adjustable)
+        │       └─ 800 ms consecutive silence → trigger pipeline
         │
-        ├─ Ollama  →  carstenuhlig/omnicoder-2-9b:q4_k_m
-        │               └─ strict system prompt: EN → ES only
+        ├─ faster-whisper "base" (CUDA int8, <400 MB VRAM)
+        │       └─ Silero VAD filter (second-pass cleanup)
         │
-        └─ Kokoro-82M TTS  →  raw PCM chunks
-                └─ websocket.send_bytes() → browser Web Audio API
+        ├─ Ollama → llama3.2
+        │       └─ strict system prompt: EN → ES only, no filler
+        │
+        └─ Kokoro-82M ONNX → raw int16 PCM chunks
+                └─ websocket.send_bytes() → Web Audio API → speaker
 ```
 
----
+### Why client-side VAD?
 
-## Prerequisites
-
-| Tool | Install |
-|------|---------|
-| Python 3.10+ | https://www.python.org |
-| `uv` | `pip install uv` or https://docs.astral.sh/uv/ |
-| CUDA 12.x drivers | NVIDIA Game Ready / Studio driver |
-| Ollama | https://ollama.com — `winget install Ollama.Ollama` |
-| Git (optional) | For cloning |
-
----
-
-## Step 1 — Pull the Ollama model
-
-```powershell
-# Start Ollama (runs on localhost:11434)
-ollama serve
-
-# In a new terminal, pull the model
-ollama pull carstenuhlig/omnicoder-2-9b:q4_k_m
-```
-
-Leave `ollama serve` running in the background.
-
----
-
-## Step 2 — Create environment and install dependencies
-
-```powershell
-# From the project folder
-uv venv .venv --python 3.11
-.\.venv\Scripts\Activate.ps1
-
-# Core dependencies
-uv pip install fastapi "uvicorn[standard]" websockets soundfile numpy httpx
-
-# STT — faster-whisper with CUDA support
-uv pip install faster-whisper
-# If CTranslate2 CUDA is missing, force the CUDA wheel:
-pip install ctranslate2 --index-url https://download.pytorch.org/whl/cu121
-
-# TTS — choose ONE:
-uv pip install kokoro-onnx          # Recommended: ONNX, no PyTorch needed
-# OR
-uv pip install kokoro               # PyTorch variant (slightly higher quality)
-```
-
-### Kokoro voice model download
-
-Kokoro downloads its model weights automatically on first run (~82 MB).  
-If you need to pre-download:
-
-```powershell
-python -c "from kokoro import KPipeline; KPipeline(lang_code='s')"
-```
-
----
-
-## Step 3 — Run the server
-
-```powershell
-# Make sure .venv is active and ollama serve is running
-python server.py
-```
-
-You should see:
-
-```
-INFO  Loading faster-whisper 'base' model on CUDA (int8)…
-INFO  ✅ Whisper model loaded on CUDA.
-INFO  Loading Kokoro-82M TTS pipeline (Spanish)…
-INFO  ✅ Kokoro TTS pipeline ready.
-INFO  Uvicorn running on http://0.0.0.0:8000
-```
-
----
-
-## Step 4 — Open the browser
-
-Navigate to: **http://localhost:8000**
-
-1. Click **▶ Start Listening**
-2. Grant microphone permission
-3. Speak English — subtitles and Spanish audio will follow in ~1–1.5 s
-4. Click **⏹ Stop** to end the session
+WebM is a container format — individual 100 ms chunks cannot be decoded in
+isolation because the codec context (headers) only exists in the first chunk.
+Trying to run `soundfile.read()` on a single chunk returns nothing, which the
+old server-side approach misread as silence. The fix: compute RMS energy in the
+browser using `AnalyserNode.getFloatTimeDomainData()`, which has direct access
+to the raw PCM samples, and send the dBFS value to the server as a JSON message.
+The server uses that value for VAD decisions and only decodes the full WebM
+buffer once, at transcription time, when all chunks are available.
 
 ---
 
 ## VRAM Budget (RTX 3070 Ti, 8 GB)
 
 | Component | VRAM |
-|-----------|------|
+|---|---|
 | faster-whisper base (int8) | ~350 MB |
 | Kokoro-82M (ONNX) | ~250 MB |
-| Ollama (q4_k_m, 9B) | ~5.5–6 GB |
+| Ollama llama3.2 (3B, Q4) | ~2.0 GB |
 | OS / display / overhead | ~0.5 GB |
-| **Total** | **~6.6–7.1 GB** ✅ |
+| **Total** | **~3.1 GB** ✅ |
 
-> If Ollama and Whisper/Kokoro compete for VRAM, start `ollama serve` first.  
-> Ollama auto-offloads to CPU when under pressure, but latency will increase.
+> llama3.2 (3B) uses far less VRAM than the original OmniCoder model (~6 GB),
+> leaving plenty of headroom on a 3070 Ti.
 
 ---
 
-## Configuration
+## Configuration reference
 
-| Setting | File | Variable |
-|---------|------|----------|
-| Ollama model name | `server.py` | `OLLAMA_MODEL` |
-| Ollama URL | `server.py` | `OLLAMA_URL` |
-| Silence threshold | `server.py` | `SessionState.SILENCE_DURATION_S` |
-| Whisper model size | `server.py` | `WhisperModel("base", …)` → change to `"small"` for better accuracy |
-| TTS voice | `server.py` | `kokoro_pipeline(text, voice="af_bella", …)` |
-| TTS sample rate | `index.html` | `SAMPLE_RATE = 24000` |
+| Setting | Location | Default |
+|---|---|---|
+| Silence threshold (dBFS) | `server.py` → `VAD_SILENCE_DB` | -35.0 |
+| Silence duration before trigger | `server.py` → `VAD_SILENCE_DURATION_S` | 0.8 s |
+| Minimum speech length | `server.py` → `VAD_MIN_SPEECH_S` | 0.3 s |
+| Ollama model | `server.py` → `OLLAMA_MODEL` | `llama3.2` |
+| Whisper model size | `server.py` → `WhisperModel(...)` | `base` |
+| TTS voice | `server.py` → `_generate_chunks()` | `af_bella` |
+| TTS sample rate | `index.html` → `SAMPLE_RATE` | 24000 Hz |
+
+The silence threshold can also be adjusted live via the slider in the browser UI
+without restarting the server. Each WebSocket session maintains its own threshold.
+
+---
+
+## WebSocket message protocol
+
+### Browser → Server
+
+| Frame type | Format | Purpose |
+|---|---|---|
+| Binary | Raw WebM/Opus bytes | Audio chunk (100 ms) |
+| Text JSON | `{"type":"vad","db":-28.3}` | RMS energy of current chunk |
+| Text JSON | `{"type":"set_threshold","db":-30}` | Update silence threshold |
+
+### Server → Browser
+
+| Frame type | Format | Purpose |
+|---|---|---|
+| Text JSON | `{"type":"subtitle","en":"...","es":"..."}` | Transcription + translation |
+| Binary | Raw int16 PCM @ 24 kHz | TTS audio chunk |
+
+---
+
+## Installation
+
+### Prerequisites
+
+| Tool | Install |
+|---|---|
+| Python 3.10+ | https://www.python.org |
+| `uv` | `pip install uv` |
+| CUDA 12.x drivers | NVIDIA Game Ready / Studio driver |
+| Ollama | `winget install Ollama.Ollama` |
+
+### Steps
+
+```powershell
+# 1. Start Ollama and pull the model
+ollama serve
+ollama pull llama3.2
+
+# 2. Create environment
+uv venv .venv --python 3.11
+.\.venv\Scripts\Activate.ps1
+uv pip install -r requirements.txt
+
+# 3. If CUDA isn't picked up for Whisper
+pip install ctranslate2 --index-url https://download.pytorch.org/whl/cu121
+
+# 4. Run
+python server.py
+```
 
 ---
 
 ## Troubleshooting
 
-### "Ollama not reachable at localhost:11434"
-Run `ollama serve` in a separate PowerShell window before starting the server.
+### Translation never triggers after silence
 
-### "CUDA unavailable for Whisper — falling back to CPU"
-Reinstall CTranslate2 with the CUDA extra:
+Watch the **Mic Level** bar while not speaking. The bar must sit below the
+threshold marker for silence to be detected. Drag the **Silence threshold**
+slider right (less negative) until resting noise falls below the marker.
+
+### "Ollama not reachable at localhost:11434"
+
+Run `ollama serve` in a separate terminal before starting the server.
+
+### "llama3.2 not found in Ollama"
+
+```powershell
+ollama pull llama3.2
+```
+
+### No audio playback in browser
+
+- Click anywhere on the page first (browser autoplay policy)
+- Check browser console for Web Audio API errors
+- Verify the server logs show `🔊 TTS stream complete`
+
+### Kokoro voice error
+
+Available voices vary by kokoro-onnx version. If `af_bella` fails, check
+`voices.json` in your project directory for valid voice names.
+
+### CUDA not detected for Whisper
+
 ```powershell
 pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.org/whl/cu121
 ```
 
-### No audio playback in browser
-- Check browser console for Web Audio errors
-- Chrome/Edge: click anywhere on the page first (autoplay policy requires user gesture)
-- Verify the server is sending binary frames: watch for `[AUDIO] Scheduled N frames` in server logs
-
-### MediaRecorder sends 0-byte chunks
-Some browsers won't emit data if the tab is in the background. Keep the tab visible while speaking.
-
-### Kokoro voice not found
-Available Spanish voices: `af_bella`, `ef_dora`, `hf_alpha`, `hf_beta`  
-See https://github.com/hexgrad/kokoro for the full voice list.
-
 ---
 
-## Extending to other language pairs
+## Multi-user / conversation mode
 
-1. Change `language="en"` in `transcribe()` to the source language code
-2. Update `TRANSLATION_SYSTEM_PROMPT` with the new target language
-3. Change `KPipeline(lang_code=...)` to the target language code:
-   - `'a'` = American English, `'b'` = British English
-   - `'e'` = Spanish (Spain), `'f'` = French, `'h'` = Hindi, `'j'` = Japanese
-   - `'p'` = Brazilian Portuguese, `'z'` = Chinese (Mandarin)
-
----
-
-## Multi-user / hardware isolation
-
-Each WebSocket connection gets its own `SessionState` instance with an isolated
-audio buffer and independent VAD tracking. Two phones connecting simultaneously
-will each receive their own transcription → translation → TTS loop without
-audio bleed between sessions.
-"
+Each WebSocket connection is fully isolated — its own audio buffer, VAD state,
+and silence threshold. Two people can connect from separate devices
+(e.g. `http://192.168.x.x:8000` on your LAN) and each gets an independent
+translation pipeline. Full bidirectional A↔B conversation mode (where each
+speaker's mic routes to the other person's speaker) is not yet implemented.
