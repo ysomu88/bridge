@@ -121,11 +121,8 @@ Watch the **Mic Level** meter while remaining completely silent. The signal shou
 | --- | --- |
 | `server.py` | FastAPI Asynchronous Backend — WebSocket lifecycle, Faster-Whisper STT, Ollama API translation interface, `kokoro-onnx` TTS pipeline. |
 | `index.html` | Client Interface — Native HTML5 Audio capture, raw PCM stream conversion, live VAD monitoring, side-by-side subtitle render matrix. |
-| `run_bridge.ps1` | Native PowerShell reverse-tunnel automation script (handles IP clipboard capture and custom `localtunnel` parameters). |
-| `.vscode/tasks.json` | Project-scoped background build task orchestrator. |
+| `start.ps1` | Native PowerShell script for starting up Bridge locally |
 | `requirements.txt` | Explicit Python tracking matrix (`uv` optimized). |
-| `.gitignore` | Securely blocks local model blobs (`*.onnx`, `*.bin`), user variables (`.env`, `.secrets`), and your local workspace caching states (`.vscode/` tracking overrides). |
-
 ---
 
 ## 🔧 Troubleshooting
