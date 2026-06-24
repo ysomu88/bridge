@@ -69,6 +69,21 @@
       font-family: var(--font-body); font-style: italic; font-size: 0.85rem;
       color: var(--text-mid); padding-left: calc(32px + 0.6rem);
     }
+    
+    /* Interactive Language Toggle styling inside the tagline */
+    .lang-toggle-link {
+      color: var(--accent-en);
+      text-decoration: none;
+      font-weight: 600;
+      border-bottom: 1px dashed var(--accent-en);
+      cursor: pointer;
+      transition: color var(--transition), border-color var(--transition);
+      user-select: none;
+    }
+    .lang-toggle-link:hover {
+      color: var(--accent-es);
+      border-color: var(--accent-es);
+    }
 
     /* ── Status bar ── */
     .status-bar {
@@ -174,8 +189,8 @@
     .lang-block.active-en { border-color: var(--accent-en); box-shadow: 0 0 0 1px var(--accent-glow); }
     .lang-block.active-es { border-color: var(--accent-es); box-shadow: 0 0 0 1px #f97b4f30; }
     .lang-label { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
-    .lang-label.en { color: var(--accent-en); }
-    .lang-label.es { color: var(--accent-es); }
+    .lang-label.left-label { color: var(--accent-en); }
+    .lang-label.right-label { color: var(--accent-es); }
     .lang-text { font-family: var(--font-body); font-size: 1.05rem; line-height: 1.65; color: var(--text-hi); flex: 1; min-height: 3em; }
     .lang-text.placeholder { color: var(--text-lo); font-style: italic; }
 
@@ -196,8 +211,8 @@
     }
     @keyframes slide-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .history-item .ts { grid-column: 1 / -1; font-size: 0.65rem; color: var(--text-lo); font-weight: 600; letter-spacing: 0.06em; }
-    .history-item .hi-en { font-family: var(--font-body); font-size: 0.88rem; color: var(--text-mid); border-left: 2px solid var(--accent-en); padding-left: 0.5rem; }
-    .history-item .hi-es { font-family: var(--font-body); font-size: 0.88rem; color: var(--text-mid); border-left: 2px solid var(--accent-es); padding-left: 0.5rem; }
+    .history-item .hi-left { font-family: var(--font-body); font-size: 0.88rem; color: var(--text-mid); border-left: 2px solid var(--accent-en); padding-left: 0.5rem; }
+    .history-item .hi-right { font-family: var(--font-body); font-size: 0.88rem; color: var(--text-mid); border-left: 2px solid var(--accent-es); padding-left: 0.5rem; }
     .empty-log { color: var(--text-lo); font-size: 0.82rem; font-style: italic; text-align: center; padding: 2rem 0; }
 
     @media (max-width: 600px) {
@@ -213,7 +228,7 @@
       <div class="wordmark-icon">⇌</div>
       <h1>Bridge</h1>
     </div>
-    <p class="tagline">Real-time EN → ES voice translation · Fully local · Fully yours</p>
+    <p class="tagline">Real-time <span class="lang-toggle-link" id="lang-direction-label" onclick="toggleDirection()">EN → ES</span> voice translation · Fully local · Fully yours</p>
   </header>
 
   <div class="status-bar">
@@ -248,12 +263,12 @@
 
   <div class="subtitle-panel">
     <div class="lang-block" id="block-en">
-      <span class="lang-label en">English — Transcription</span>
-      <div class="lang-text placeholder" id="text-en">Listening for speech…</div>
+      <span class="lang-label left-label" id="lbl-left">English — Transcription</span>
+      <div class="lang-text placeholder" id="text-left">Listening for speech…</div>
     </div>
     <div class="lang-block" id="block-es">
-      <span class="lang-label es">Español — Traducción</span>
-      <div class="lang-text placeholder" id="text-es">En espera de traducción…</div>
+      <span class="lang-label right-label" id="lbl-right">Español — Traducción</span>
+      <div class="lang-text placeholder" id="text-right">En espera de traducción…</div>
     </div>
   </div>
 
@@ -278,10 +293,13 @@
     const statusDot       = document.getElementById("status-dot");
     const statusLabel     = document.getElementById("status-label");
     const chunkCount      = document.getElementById("chunk-count");
-    const textEn          = document.getElementById("text-en");
-    const textEs          = document.getElementById("text-es");
+    const textLeft        = document.getElementById("text-left");
+    const textRight       = document.getElementById("text-right");
     const blockEn         = document.getElementById("block-en");
     const blockEs         = document.getElementById("block-es");
+    const lblLeft         = document.getElementById("lbl-left");
+    const lblRight        = document.getElementById("lbl-right");
+    const langDirection   = document.getElementById("lang-direction-label");
     const historyLog      = document.getElementById("history-log");
     const levelFill       = document.getElementById("level-fill");
     const dbReadout       = document.getElementById("db-readout");
@@ -293,6 +311,7 @@
     let ws            = null;
     let micStream     = null;
     let totalChunks   = 0;
+    let currentTarget = "es"; // "es" means EN -> ES, "en" means ES -> EN
 
     // Unified Audio processing context for recording and calculations
     let audioCtx      = null;
@@ -306,6 +325,27 @@
 
     // Threshold (mirrors server VAD_SILENCE_DB, user-adjustable)
     let silenceThresholdDb = parseFloat(thresholdSlider.value);
+
+    // ── Global Interface Language Direction Mutator ───────────────────
+    window.toggleDirection = () => {
+      if (ws || micStream) return; // Disallow toggle during an active stream session
+      
+      if (currentTarget === "es") {
+        currentTarget = "en";
+        langDirection.textContent = "ES → EN";
+        lblLeft.textContent = "Español — Transcripción";
+        lblRight.textContent = "English — Traducción";
+        textLeft.textContent = "Escuchando voz…";
+        textRight.textContent = "Waiting for translation…";
+      } else {
+        currentTarget = "es";
+        langDirection.textContent = "EN → ES";
+        lblLeft.textContent = "English — Transcription";
+        lblRight.textContent = "Español — Traducción";
+        textLeft.textContent = "Listening for speech…";
+        textRight.textContent = "En espera de traducción…";
+      }
+    };
 
     // ── Status ────────────────────────────────────────────────────────
     const STATES = {
@@ -367,7 +407,10 @@
     // ── WebSocket ─────────────────────────────────────────────────────
     function connectWebSocket() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+      const sourceLang = currentTarget === "es" ? "en" : "es";
+      
+      // Inject directional tags cleanly into connection initialization parameters
+      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${sourceLang}&target=${currentTarget}`);
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
@@ -380,7 +423,10 @@
           try {
             const msg = JSON.parse(evt.data);
             if (msg.type === "subtitle") {
-              updateSubtitles(msg.en, msg.es);
+              // Direct display rendering according to runtime localization directions
+              const leftText = currentTarget === "es" ? msg.en : msg.src;
+              const rightText = currentTarget === "es" ? msg.es : msg.tgt;
+              updateSubtitles(leftText, rightText);
             }
           } catch (e) {
             console.warn("[WS] Non-JSON text:", evt.data);
@@ -493,37 +539,44 @@
     }
 
     // ── Subtitles ─────────────────────────────────────────────────────
-    function updateSubtitles(en, es) {
-      textEn.textContent = en || "—";
-      textEn.classList.remove("placeholder");
+    function updateSubtitles(left, right) {
+      textLeft.textContent = left || "—";
+      textLeft.classList.remove("placeholder");
       blockEn.classList.add("active-en");
       setTimeout(() => blockEn.classList.remove("active-en"), 2000);
 
-      textEs.textContent = es || "—";
-      textEs.classList.remove("placeholder");
+      textRight.textContent = right || "—";
+      textRight.classList.remove("placeholder");
       blockEs.classList.add("active-es");
       setTimeout(() => blockEs.classList.remove("active-es"), 2000);
 
-      appendHistory(en, es);
+      appendHistory(left, right);
     }
 
     function resetSubtitles() {
-      textEn.textContent = "Listening for speech…"; textEn.classList.add("placeholder");
-      textEs.textContent = "En espera de traducción…"; textEs.classList.add("placeholder");
+      if (currentTarget === "es") {
+        textLeft.textContent = "Listening for speech…";
+        textRight.textContent = "En espera de traducción…";
+      } else {
+        textLeft.textContent = "Escuchando voz…";
+        textRight.textContent = "Waiting for translation…";
+      }
+      textLeft.classList.add("placeholder");
+      textRight.classList.add("placeholder");
     }
 
     // ── History ───────────────────────────────────────────────────────
     let historyEmpty = true;
 
-    function appendHistory(en, es) {
+    function appendHistory(left, right) {
       if (historyEmpty) { historyLog.innerHTML = ""; historyEmpty = false; }
       const stamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       const item  = document.createElement("div");
       item.className = "history-item";
       item.innerHTML = `
         <span class="ts">${stamp}</span>
-        <div class="hi-en">${esc(en)}</div>
-        <div class="hi-es">${esc(es)}</div>`;
+        <div class="hi-left">${esc(left)}</div>
+        <div class="hi-right">${esc(right)}</div>`;
       historyLog.prepend(item);
     }
 
@@ -542,6 +595,6 @@
 
     console.log("[INIT] Bridge client ready.");
   })();
-  </script>
+</script>
 </body>
 </html>
