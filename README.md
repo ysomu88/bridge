@@ -1,6 +1,5 @@
 # Bridge — Real-Time Voice Translation
 
-[![CI](https://github.com/ysomu88/bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ysomu88/bridge/actions)
 
 ## 🎤 What is Bridge?
 
@@ -10,7 +9,11 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 
 <div align="center">
   <img src="docs/UI.png" width="600"/>
+
+  [![Built Status](https://github.com/ysomu88/bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ysomu88/bridge/actions)
+  
 </div>
+
 
 ---
 
