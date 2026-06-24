@@ -1,30 +1,46 @@
 # Bridge — Real-Time Voice Translation
 
-
 ## 🎤 What is Bridge?
 
-**Bridge** is a local, real-time voice-to-voice translation engine that runs entirely on your local machine. Speak in Spanish and hear your words translated to English instantly — featuring live streaming subtitles, optimized low-latency voice detection, and immediate audio feedback.
+**Bridge** is a local, real-time voice-to-voice translation engine that runs entirely on your machine. Speak in any supported language and hear the translation spoken back instantly — with live streaming subtitles and immediate audio feedback.
 
 No cloud APIs. No subscriptions. 100% private, local compute.
 
 <div align="center">
   <img src="docs/UI.png" width="600"/>
 
-  [![Built Status](https://github.com/ysomu88/bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ysomu88/bridge/actions)
-  
+  [![Build Status](https://github.com/ysomu88/bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ysomu88/bridge/actions)
 </div>
-
 
 ---
 
 ## ✨ Features
 
-* 🎙️ **Real-time translation** — Low end-to-end processing latency.
-* 🚀 **Streamlined Audio Pipeline** — Transmits raw Float32 PCM audio arrays natively over WebSockets directly into NumPy memory arrays at C-speed, eliminating heavy container decoding steps.
-* 📝 **Live subtitles** — Spanish transcription and English translation rendered side by side. *Additional language support coming soon (only ES/EN available now)*
-* 🔊 **Natural voice output** — Ultra-fast inference via `kokoro-onnx` streamed directly back to your browser client.
-* 💻 **Low VRAM footprint** — Fits comfortably on an 8 GB VRAM budget (optimized and tested on an RTX 3070 Ti running Windows 11).
-* 🌐 **Remote Sharing Ready** — Securely tunnel your pipeline to let external clients use your GPU for computing right from their mobile or desktop web browsers.
+- 🎙️ **Real-time translation** — Low end-to-end processing latency
+- 🌍 **8 languages supported** — English, Spanish, French, Italian, Japanese, Chinese, Korean, Portuguese — with more coming
+- 🔄 **Any direction** — Pick source and target from dropdowns, swap with one click
+- 🚀 **Streamlined audio pipeline** — Raw Float32 PCM sent directly over WebSocket into NumPy, no container decoding overhead
+- 📝 **Live subtitles** — Source and translation rendered side by side, updating in real time
+- 🔊 **Natural voice output** — Ultra-fast inference via `kokoro-onnx` streamed back to your browser
+- 💻 **Low VRAM footprint** — Fits comfortably on 8 GB VRAM (tested on RTX 3070 Ti, Windows 11)
+- 🌐 **Remote sharing ready** — Tunnel your pipeline so external users can connect from any browser
+
+---
+
+## 🌍 Supported Languages
+
+| Language | Speak (STT) | Translate | Voice (TTS) |
+|---|---|---|---|
+| 🇺🇸 English | ✅ | ✅ | ✅ |
+| 🇪🇸 Spanish | ✅ | ✅ | ✅ |
+| 🇫🇷 French | ✅ | ✅ | ✅ |
+| 🇮🇹 Italian | ✅ | ✅ | ✅ |
+| 🇯🇵 Japanese | ✅ | ✅ | ✅ |
+| 🇨🇳 Chinese | ✅ | ✅ | ✅ |
+| 🇰🇷 Korean | ✅ | ✅ | ✅ |
+| 🇧🇷 Portuguese | ✅ | ✅ | ✅ |
+
+> German, Hindi, and Telugu coming in a future release.
 
 ---
 
@@ -32,114 +48,113 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 
 ### Prerequisites
 
-* Python 3.12 (Managed via `uv` recommended)
-* NVIDIA GPU with CUDA 12.x runtimes
-* [Ollama](https://ollama.com) installed locally
-* Node.js & npm (for hosting public tunnels via `winget install OpenJS.NodeJS`)
+- Python 3.12 (managed via `uv`)
+- NVIDIA GPU with CUDA 12.x drivers
+- [Ollama](https://ollama.com) installed locally
+- Node.js & npm (for remote tunnel via `winget install OpenJS.NodeJS`)
 
 ### 1. Set up the environment
-
-Clone the repository and spin up your virtual environment using `uv` for speed:
 
 ```powershell
 uv venv .venv --python 3.12
 .\.venv\Scripts\Activate.ps1
 uv pip install -r requirements.txt
-
 ```
 
-### 2. Pull the translation engine
-
-Ensure your local Ollama environment is populated with the matching execution model:
+### 2. Pull the translation model
 
 ```powershell
 ollama pull llama3.2
-
 ```
 
 ---
 
-## ⚡ Automation & Execution
+## ⚡ Running Bridge
 
-You can run the stack using manually separated terminal shells, launch it with one-click automation profiles, or expose it securely to an external user.
-
-### Option A: Hosting for Remote Users (Recommended for External Access)
-
-Browsers block microphone permissions over insecure connections. To let a remote friend open your application and stream their microphone directly into your local GPU pipeline, use the built-in tunnel script:
+### Option A: One-click local launch
 
 ```powershell
-# Ensure python server.py is running in another terminal window first, then:
-.\run_bridge.ps1
-
+.\start.ps1
 ```
 
-*This hosts a secure, customized public endpoint at [https://bridge.loca.lt](https://bridge.loca.lt) so your friend can connect instantly.*
+Opens Ollama in a separate terminal, activates the environment, and starts the server.
 
-### Option B: Native VS Code Task Automation
+### Option B: Remote access via tunnel
 
-If developing locally inside VS Code, a workspace task runner is ready out-of-the-box.
-
-1. Open the project root folder in VS Code.
-2. Press **`Ctrl + Shift + B`**.
-3. VS Code will spin up a parallel terminal cluster, launch your background Ollama engine, load the `uv` environment, and boot your FastAPI instance concurrently.
-
-### Option C: Manual Local Launch
-
-If you prefer managing the terminals independently for local testing:
+Browsers block microphone access over plain HTTP. To share Bridge with a remote user:
 
 ```powershell
-# Terminal 1: Background Engine
-ollama run llama3.2
-
-# Terminal 2: Python Application Server
+# In one terminal — start the server
 .\.venv\Scripts\Activate.ps1
 python server.py
 
+# In another terminal — open the tunnel
+.\run_bridge.ps1
 ```
 
-Open your browser to **`http://localhost:8000`**, click **▶ Start Listening**, and speak.
+This exposes a secure public endpoint at **https://bridge.loca.lt** so anyone can connect directly to your local GPU pipeline from their browser.
+
+### Option C: Manual
+
+```powershell
+# Terminal 1
+ollama serve
+
+# Terminal 2
+.\.venv\Scripts\Activate.ps1
+python server.py
+```
+
+Then open **http://localhost:8000**, pick your languages, click **▶ Start Listening**, and speak.
 
 ---
 
 ## 🎚️ Tuning the silence threshold
 
-If translation execution fails to trigger after you finish speaking, your ambient background noise floor might sit above the digital Voice Activity Detection (VAD) threshold.
+If translation doesn't trigger after you stop speaking, your background noise floor may be above the VAD threshold. Watch the **Mic Level** bar while silent — it should sit below the marker line. Drag the **Silence threshold** slider right until the resting noise level falls below the marker.
 
-Watch the **Mic Level** meter while remaining completely silent. The signal should sit below the threshold marker. If it peaks or hovers over it, adjust the **Silence threshold** slider rightwards until your room's resting noise level rests below the trigger ceiling.
-
-| Environment Profile | Suggested Target Range |
-| --- | --- |
-| Isolation / Quiet Room | -40 to -35 dBFS |
-| Standard Room / Office | -32 to -28 dBFS |
-| Busy / Noisy Environment | -25 to -20 dBFS |
+| Environment | Suggested threshold |
+|---|---|
+| Quiet room | -40 to -35 dBFS |
+| Normal office | -32 to -28 dBFS |
+| Noisy environment | -25 to -20 dBFS |
 
 ---
 
-## 📁 File Architecture
+## 📁 Files
 
-| File | Subsystem Role |
-| --- | --- |
-| `server.py` | FastAPI Asynchronous Backend — WebSocket lifecycle, Faster-Whisper STT, Ollama API translation interface, `kokoro-onnx` TTS pipeline. |
-| `index.html` | Client Interface — Native HTML5 Audio capture, raw PCM stream conversion, live VAD monitoring, side-by-side subtitle render matrix. |
-| `start.ps1` | Native PowerShell script for starting up Bridge locally |
-| `requirements.txt` | Explicit Python tracking matrix (`uv` optimized). |
+| File | Purpose |
+|---|---|
+| `server.py` | FastAPI backend — WebSocket, Whisper STT, Ollama translation, Kokoro TTS |
+| `index.html` | Browser client — mic capture, VAD, subtitle display, audio playback |
+| `start.ps1` | One-click local launch script |
+| `requirements.txt` | Python dependencies |
+| `DOCUMENTATION.md` | Full architecture and technical reference |
+| `TECHNICAL_WALKTHROUGH.md` | Step-by-step explanation of how it works |
+
 ---
 
 ## 🔧 Troubleshooting
 
-**"The system ignores or clips my speech mid-sentence"**
-→ Your VAD configurations in `server.py` may be set tighter than your natural breathing cadences. Try resetting the trailing silence evaluation constants closer to human baseline breathing loops (`0.4` or `0.5` seconds) to balance speech continuity with speed.
-
-**"The tunnel drops incoming audio streams or errors out when a second user connects"**
-→ The application enforces an asynchronous execution lock (`processing_lock = asyncio.Lock()`) to protect your 8GB VRAM envelope from race conditions. Only one utterance can pass through the GPU pipeline at a time. Consecutive overlapping streams from concurrent users will be dropped or queued until the lock clears.
-
-**"The term '.\run_bridge.ps1' is not recognized..."**
-→ If Windows blocks script execution due to localized execution profiles, run this single assignment command in your PowerShell terminal frame to permit local runtime execution:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
-
-```
+**Translation never triggers after I stop speaking**
+→ Drag the Silence threshold slider right until background noise sits below the marker line. See the tuning table above.
 
 **"Ollama not reachable"**
-→ Ensure the Ollama background host engine is executing. Run `ollama run llama3.2` to verify local availability.
+→ Run `ollama serve` in a separate terminal before starting the server.
+
+**"llama3.2 not found"**
+→ Run `ollama pull llama3.2`.
+
+**No audio playback**
+→ Click anywhere on the page first — browsers require a user gesture before playing audio. Check the browser console for Web Audio errors.
+
+**"The term '.\run_bridge.ps1' is not recognized"**
+→ Run this first to allow local script execution:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+```
+
+**CUDA not detected for Whisper**
+```powershell
+pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.org/whl/cu121
+```
