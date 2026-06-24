@@ -70,20 +70,39 @@
       color: var(--text-mid); padding-left: calc(32px + 0.6rem);
     }
     
-    /* Interactive Language Toggle styling inside the tagline */
-    .lang-toggle-link {
-      color: var(--accent-en);
-      text-decoration: none;
-      font-weight: 600;
-      border-bottom: 1px dashed var(--accent-en);
-      cursor: pointer;
+    /* ── Language selector ── */
+    .lang-selector-row {
+      width: 100%; max-width: 860px;
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .lang-selector-row label {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text-lo); flex-shrink: 0;
+    }
+    .lang-select {
+      flex: 1; padding: 0.5rem 0.75rem;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text-hi);
+      font-family: var(--font-display); font-size: 0.82rem; font-weight: 600;
+      cursor: pointer; appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b97b0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 0.6rem center;
+      padding-right: 2rem;
+      transition: border-color var(--transition);
+    }
+    .lang-select:focus { outline: none; border-color: var(--accent-en); }
+    .lang-select:disabled { opacity: 0.32; cursor: not-allowed; }
+    .lang-swap-btn {
+      flex-shrink: 0; width: 34px; height: 34px;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text-mid);
+      font-size: 1rem; cursor: pointer; display: flex;
+      align-items: center; justify-content: center;
       transition: color var(--transition), border-color var(--transition);
-      user-select: none;
     }
-    .lang-toggle-link:hover {
-      color: var(--accent-es);
-      border-color: var(--accent-es);
-    }
+    .lang-swap-btn:hover { color: var(--accent-en); border-color: var(--accent-en); }
+    .lang-swap-btn:disabled { opacity: 0.32; cursor: not-allowed; }
 
     /* ── Status bar ── */
     .status-bar {
@@ -228,8 +247,37 @@
       <div class="wordmark-icon">⇌</div>
       <h1>Bridge</h1>
     </div>
-    <p class="tagline">Real-time <span class="lang-toggle-link" id="lang-direction-label" onclick="toggleDirection()">EN → ES</span> voice translation · Fully local · Fully yours</p>
+    <p class="tagline">Real-time voice translation and playback · Fully local · Fully yours</p>
   </header>
+
+  <!-- Language selector -->
+  <div class="lang-selector-row">
+    <label>From</label>
+    <select class="lang-select" id="select-source">
+      <option value="en" selected>🇺🇸 English</option>
+      <option value="es">🇪🇸 Spanish</option>
+      <option value="fr">🇫🇷 French</option>
+      <option value="it">🇮🇹 Italian</option>
+      <option value="ja">🇯🇵 Japanese</option>
+      <option value="zh">🇨🇳 Chinese</option>
+      <option value="ko">🇰🇷 Korean</option>
+      <option value="pt">🇧🇷 Portuguese</option>
+      <option value="hi">🇮🇳 Hindi</option>
+    </select>
+    <button class="lang-swap-btn" id="btn-swap" title="Swap languages">⇌</button>
+    <label>To</label>
+    <select class="lang-select" id="select-target">
+      <option value="en">🇺🇸 English</option>
+      <option value="es" selected>🇪🇸 Spanish</option>
+      <option value="fr">🇫🇷 French</option>
+      <option value="it">🇮🇹 Italian</option>
+      <option value="ja">🇯🇵 Japanese</option>
+      <option value="zh">🇨🇳 Chinese</option>
+      <option value="ko">🇰🇷 Korean</option>
+      <option value="pt">🇧🇷 Portuguese</option>
+      <option value="hi">🇮🇳 Hindi</option>
+    </select>
+  </div>
 
   <div class="status-bar">
     <div class="status-indicator">
@@ -290,6 +338,9 @@
     const btnStart        = document.getElementById("btn-start");
     const btnStop         = document.getElementById("btn-stop");
     const btnClear        = document.getElementById("btn-clear");
+    const btnSwap         = document.getElementById("btn-swap");
+    const selectSource    = document.getElementById("select-source");
+    const selectTarget    = document.getElementById("select-target");
     const statusDot       = document.getElementById("status-dot");
     const statusLabel     = document.getElementById("status-label");
     const chunkCount      = document.getElementById("chunk-count");
@@ -299,7 +350,6 @@
     const blockEs         = document.getElementById("block-es");
     const lblLeft         = document.getElementById("lbl-left");
     const lblRight        = document.getElementById("lbl-right");
-    const langDirection   = document.getElementById("lang-direction-label");
     const historyLog      = document.getElementById("history-log");
     const levelFill       = document.getElementById("level-fill");
     const dbReadout       = document.getElementById("db-readout");
@@ -307,45 +357,79 @@
     const thresholdValue  = document.getElementById("threshold-value");
     const thresholdMarker = document.getElementById("threshold-marker");
 
+    // ── Language metadata ─────────────────────────────────────────────
+    const LANGUAGES = {
+      en: { label: "English",    transcribe: "Listening for speech…",    translate: "Waiting for translation…"  },
+      es: { label: "Spanish",    transcribe: "Escuchando voz…",           translate: "En espera de traducción…"  },
+      fr: { label: "French",     transcribe: "En attente de la parole…",  translate: "En attente de traduction…" },
+      it: { label: "Italian",    transcribe: "In ascolto…",               translate: "In attesa di traduzione…"  },
+      ja: { label: "Japanese",   transcribe: "音声を待っています…",           translate: "翻訳を待っています…"           },
+      zh: { label: "Chinese",    transcribe: "等待语音输入…",                translate: "等待翻译…"                   },
+      ko: { label: "Korean",     transcribe: "음성을 기다리는 중…",           translate: "번역을 기다리는 중…"           },
+      pt: { label: "Portuguese", transcribe: "Aguardando fala…",          translate: "Aguardando tradução…"      },
+      hi: { label: "Hindi",       transcribe: "बोलने की प्रतीक्षा है…",       translate: "अनुवाद की प्रतीक्षा है…"     },
+    };
+
     // ── State ─────────────────────────────────────────────────────────
     let ws            = null;
     let micStream     = null;
     let totalChunks   = 0;
-    let currentTarget = "es"; // "es" means EN -> ES, "en" means ES -> EN
 
-    // Unified Audio processing context for recording and calculations
     let audioCtx      = null;
     let scriptNode    = null;
     let micSource     = null;
 
-    // Playback
     let playbackCtx   = null;
     let nextPlayTime  = 0;
     const SAMPLE_RATE = 24000;
 
-    // Threshold (mirrors server VAD_SILENCE_DB, user-adjustable)
     let silenceThresholdDb = parseFloat(thresholdSlider.value);
 
-    // ── Global Interface Language Direction Mutator ───────────────────
-    window.toggleDirection = () => {
-      if (ws || micStream) return; // Disallow toggle during an active stream session
-      
-      if (currentTarget === "es") {
-        currentTarget = "en";
-        langDirection.textContent = "ES → EN";
-        lblLeft.textContent = "Español — Transcripción";
-        lblRight.textContent = "English — Traducción";
-        textLeft.textContent = "Escuchando voz…";
-        textRight.textContent = "Waiting for translation…";
-      } else {
-        currentTarget = "es";
-        langDirection.textContent = "EN → ES";
-        lblLeft.textContent = "English — Transcription";
-        lblRight.textContent = "Español — Traducción";
-        textLeft.textContent = "Listening for speech…";
-        textRight.textContent = "En espera de traducción…";
+    // ── Language selector logic ───────────────────────────────────────
+    function getSource() { return selectSource.value; }
+    function getTarget() { return selectTarget.value; }
+
+    function updateSubtitleLabels() {
+      const src = LANGUAGES[getSource()] || LANGUAGES.en;
+      const tgt = LANGUAGES[getTarget()] || LANGUAGES.es;
+      lblLeft.textContent  = `${src.label} — Source`;
+      lblRight.textContent = `${tgt.label} — Translation`;
+      resetSubtitles();
+    }
+
+    function setSelectorsDisabled(disabled) {
+      selectSource.disabled = disabled;
+      selectTarget.disabled = disabled;
+      btnSwap.disabled      = disabled;
+    }
+
+    // Prevent same language on both sides
+    selectSource.addEventListener("change", () => {
+      if (selectSource.value === selectTarget.value) {
+        // Pick the first option that isn't the newly selected source
+        const opts = [...selectTarget.options];
+        selectTarget.value = opts.find(o => o.value !== selectSource.value).value;
       }
-    };
+      updateSubtitleLabels();
+    });
+
+    selectTarget.addEventListener("change", () => {
+      if (selectTarget.value === selectSource.value) {
+        const opts = [...selectSource.options];
+        selectSource.value = opts.find(o => o.value !== selectTarget.value).value;
+      }
+      updateSubtitleLabels();
+    });
+
+    btnSwap.addEventListener("click", () => {
+      if (ws || micStream) return;
+      const tmp = selectSource.value;
+      selectSource.value = selectTarget.value;
+      selectTarget.value = tmp;
+      updateSubtitleLabels();
+    });
+
+    updateSubtitleLabels();
 
     // ── Status ────────────────────────────────────────────────────────
     const STATES = {
@@ -407,10 +491,7 @@
     // ── WebSocket ─────────────────────────────────────────────────────
     function connectWebSocket() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      const sourceLang = currentTarget === "es" ? "en" : "es";
-      
-      // Inject directional tags cleanly into connection initialization parameters
-      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${sourceLang}&target=${currentTarget}`);
+      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${getSource()}&target=${getTarget()}`);
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
@@ -423,10 +504,7 @@
           try {
             const msg = JSON.parse(evt.data);
             if (msg.type === "subtitle") {
-              // Direct display rendering according to runtime localization directions
-              const leftText = currentTarget === "es" ? msg.en : msg.src;
-              const rightText = currentTarget === "es" ? msg.es : msg.tgt;
-              updateSubtitles(leftText, rightText);
+              updateSubtitles(msg.src, msg.tgt);
             }
           } catch (e) {
             console.warn("[WS] Non-JSON text:", evt.data);
@@ -461,6 +539,7 @@
         return;
       }
 
+      setSelectorsDisabled(true);
       connectWebSocket();
 
       // Setup audio context at native downstream target sample rate (16kHz)
@@ -531,6 +610,7 @@
       btnStop.disabled  = true;
       totalChunks       = 0;
       chunkCount.textContent = "0 chunks sent";
+      setSelectorsDisabled(false);
       setStatus("disconnected");
       resetSubtitles();
       levelFill.style.width = "0%";
@@ -554,13 +634,10 @@
     }
 
     function resetSubtitles() {
-      if (currentTarget === "es") {
-        textLeft.textContent = "Listening for speech…";
-        textRight.textContent = "En espera de traducción…";
-      } else {
-        textLeft.textContent = "Escuchando voz…";
-        textRight.textContent = "Waiting for translation…";
-      }
+      const src = LANGUAGES[getSource()] || LANGUAGES.en;
+      const tgt = LANGUAGES[getTarget()] || LANGUAGES.es;
+      textLeft.textContent  = src.transcribe;
+      textRight.textContent = tgt.translate;
       textLeft.classList.add("placeholder");
       textRight.classList.add("placeholder");
     }

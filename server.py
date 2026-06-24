@@ -7,16 +7,26 @@ Target: RTX 3070 Ti (8GB VRAM), Windows 11, uv package manager
 import os
 import sys
 
-# Dynamic runtime patching for NVIDIA CUDA DLLs on Windows
+# Dynamic runtime patching for NVIDIA CUDA DLLs and espeak-ng on Windows
 if sys.platform == "win32":
     venv_base = os.path.join(os.path.dirname(__file__), ".venv", "Lib", "site-packages")
     cublas_path = os.path.join(venv_base, "nvidia", "cublas", "bin")
     cudnn_path = os.path.join(venv_base, "nvidia", "cudnn", "bin")
-    
+
     if os.path.exists(cublas_path):
         os.environ["PATH"] = cublas_path + os.pathsep + os.environ["PATH"]
     if os.path.exists(cudnn_path):
         os.environ["PATH"] = cudnn_path + os.pathsep + os.environ["PATH"]
+
+    # espeak-ng — required by kokoro-onnx for non-English phonemization
+    # (Chinese, Hindi, Japanese, French, etc.)
+    espeak_dir = r"C:\Program Files\eSpeak NG"
+    espeak_dll = os.path.join(espeak_dir, "libespeak-ng.dll")
+    espeak_exe = os.path.join(espeak_dir, "espeak-ng.exe")
+    if os.path.exists(espeak_dll):
+        os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = espeak_dll
+        os.environ["PHONEMIZER_ESPEAK_PATH"]    = espeak_exe
+        os.environ["PATH"] = espeak_dir + os.pathsep + os.environ["PATH"]
 
 import asyncio
 import io
@@ -226,8 +236,13 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     if not text.strip():
         return ""
 
-    src_name = "English" if source_lang == "en" else "Spanish"
-    tgt_name = "Spanish" if target_lang == "es" else "English"
+    LANGUAGE_NAMES = {
+        "en": "English", "es": "Spanish", "fr": "French",
+        "it": "Italian", "ja": "Japanese", "zh": "Chinese",
+        "ko": "Korean",  "pt": "Portuguese", "hi": "Hindi",
+    }
+    src_name = LANGUAGE_NAMES.get(source_lang, source_lang.upper())
+    tgt_name = LANGUAGE_NAMES.get(target_lang, target_lang.upper())
 
     system_prompt = (
         "You are a silent, professional real-time translator. "
@@ -300,9 +315,25 @@ async def synthesise_and_stream(
 
     loop = asyncio.get_running_loop()
     
-    # Configure language-specific synthesis engines dynamically
-    voice_code = "af_bella" # Standard cross-lingual fallback profile
-    kokoro_lang = "es" if target_lang == "es" else "en-us"
+    # Kokoro language codes and default voices per language
+    KOKORO_LANG_MAP = {
+        "en": ("en-us", "af_heart"),
+        "es": ("es",    "ef_dora"),
+        "fr": ("fr-fr", "ff_siwis"),
+        "it": ("it",    "if_sara"),
+        "ja": ("ja",    "jf_alpha"),
+        "zh": ("cmn",   "zf_xiaobei"),  # espeak uses 'cmn' for Mandarin, not 'zh'
+        "hi": ("hi",    "hf_alpha"),
+        "pt": ("pt-br", "pf_dora"),
+    }
+    # Korean has no voice in this kokoro-onnx build — subtitles only until Piper is added
+    KOKORO_UNSUPPORTED = {"ko"}
+
+    if target_lang in KOKORO_UNSUPPORTED:
+        logger.warning(f"TTS not available for '{target_lang}' in this kokoro-onnx version — subtitles only.")
+        return
+
+    kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
 
     def _generate_chunks():
         try:
