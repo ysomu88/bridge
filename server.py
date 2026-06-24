@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing Kokoro-82M ONNX wrapper...")
         # kokoro-onnx downloads model.onnx and voices.json automatically on first run
         kokoro_pipeline = Kokoro("model.onnx", "voices.json")
-        logger.info("✅ Kokoro TTS pipeline ready (Spanish).")
+        logger.info("✅ Kokoro TTS pipeline ready (Bi-directional).")
     except ImportError:
         logger.warning("kokoro-onnx not installed — TTS disabled. Run: uv pip install kokoro-onnx")
         kokoro_pipeline = None
@@ -119,12 +119,6 @@ app = FastAPI(title="Bridge", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 # VAD configuration (tunable without restarting)
 # ---------------------------------------------------------------------------
-# How it works: the browser sends raw PCM energy alongside every WebM chunk
-# (see index.html). The server uses that energy value for silence detection,
-# which sidesteps the WebM-chunk-decoding problem entirely.
-#
-# If you're getting false triggers from background noise, raise this value.
-# Typical speech is around -20 to -10 dBFS. A quiet room idles at -50 to -40.
 VAD_SILENCE_DB: float = -40.0       # dBFS below which we call it silence
 VAD_SILENCE_DURATION_S: float = 0.5 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
@@ -138,8 +132,10 @@ class SessionState:
 
     CHUNK_SR: int = 16_000
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, source_lang: str = "en", target_lang: str = "es"):
         self.session_id = session_id
+        self.source_lang = source_lang
+        self.target_lang = target_lang
         self.audio_buffer = io.BytesIO()
         self.has_voice: bool = False
         self.speech_start: Optional[float] = None
@@ -170,20 +166,13 @@ def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional
     """
     Directly converts raw incoming PCM Float32 bytes from the browser 
     into a NumPy array, completely bypassing container parsers.
-    
-    The frontend now forces a native 16kHz capture rate, so the incoming 
-    stream aligns perfectly with faster-whisper's requirements.
     """
     if not raw_bytes:
         return None
 
     try:
-        # Since the browser sends raw Float32 data directly from the AudioContext,
-        # we can interpret the byte buffer directly into a NumPy array.
-        # We use .copy() to ensure the array owns its memory space for Whisper.
         audio = np.frombuffer(raw_bytes, dtype=np.float32).copy()
 
-        # Safety check: Ensure the buffer meets the minimum speech length threshold
         min_samples = int(VAD_MIN_SPEECH_S * target_sr)
         if len(audio) < min_samples:
             logger.debug(f"Audio buffer too short: {len(audio)} samples < {min_samples} minimum.")
@@ -200,8 +189,8 @@ def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional
 # ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
-async def transcribe(audio: np.ndarray) -> str:
-    """Run faster-whisper in a thread pool so we don't block the event loop."""
+async def transcribe(audio: np.ndarray, source_lang: str) -> str:
+    """Run faster-whisper in a thread pool configured with session language parameters."""
     if whisper_model is None:
         return ""
 
@@ -210,7 +199,7 @@ async def transcribe(audio: np.ndarray) -> str:
     def _run() -> str:
         segments, _ = whisper_model.transcribe(
             audio,
-            language="en",
+            language=source_lang,
             beam_size=5,
             vad_filter=True,
             vad_parameters={
@@ -221,7 +210,7 @@ async def transcribe(audio: np.ndarray) -> str:
         return " ".join(seg.text.strip() for seg in segments).strip()
 
     text = await loop.run_in_executor(None, _run)
-    logger.info(f"📝 Transcript: {text!r}")
+    logger.info(f"📝 Transcript ({source_lang}): {text!r}")
     return text
 
 
@@ -230,26 +219,30 @@ async def transcribe(audio: np.ndarray) -> str:
 # ---------------------------------------------------------------------------
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "llama3.2"
-TRANSLATION_SYSTEM_PROMPT = (
-    "You are a silent, professional real-time translator. "
-    "The user sends English text. "
-    "You reply ONLY with the Spanish translation — no preamble, no explanations, "
-    "no markdown, no extra punctuation beyond what the original contains. "
-    "One translation per message. Nothing else."
-)
 
 
-async def translate_to_spanish(english_text: str) -> str:
-    """Send text to local Ollama and return Spanish translation."""
-    if not english_text.strip():
+async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
+    """Send text to local Ollama and return translation mapped across active source/target paths."""
+    if not text.strip():
         return ""
+
+    src_name = "English" if source_lang == "en" else "Spanish"
+    tgt_name = "Spanish" if target_lang == "es" else "English"
+
+    system_prompt = (
+        "You are a silent, professional real-time translator. "
+        f"The user sends {src_name} text. "
+        f"You reply ONLY with the {tgt_name} translation — no preamble, no explanations, "
+        "no markdown, no extra punctuation beyond what the original contains. "
+        "One translation per message. Nothing else."
+    )
 
     payload = {
         "model": OLLAMA_MODEL,
         "stream": False,
         "messages": [
-            {"role": "system", "content": TRANSLATION_SYSTEM_PROMPT},
-            {"role": "user", "content": english_text},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
         ],
     }
 
@@ -264,7 +257,7 @@ async def translate_to_spanish(english_text: str) -> str:
                 return ""
             resp.raise_for_status()
             translation = resp.json()["message"]["content"].strip()
-            logger.info(f"🌐 Translation: {translation!r}")
+            logger.info(f"🌐 Translation ({tgt_name}): {translation!r}")
             return translation
     except httpx.ConnectError:
         logger.error("Ollama not reachable at localhost:11434 — is it running?")
@@ -278,19 +271,26 @@ async def translate_to_spanish(english_text: str) -> str:
 # TTS via Kokoro-82M
 # ---------------------------------------------------------------------------
 async def synthesise_and_stream(
-    text: str,
+    translated_text: str,
     websocket: WebSocket,
-    english_text: str,
+    original_text: str,
+    source_lang: str,
+    target_lang: str,
 ) -> None:
-    """Synthesise Spanish text and stream PCM bytes back to client."""
-    if not text:
+    """Synthesise target text and stream PCM bytes back to client with layout routing indicators."""
+    if not translated_text:
         return
 
-    # Push subtitle update first so the UI updates immediately
+    # Pack subtitle properties context-aware for UI mapping blocks
     try:
-        await websocket.send_text(
-            json.dumps({"type": "subtitle", "en": english_text, "es": text})
-        )
+        payload = {
+            "type": "subtitle",
+            "src": original_text,
+            "tgt": translated_text,
+            "en": original_text if source_lang == "en" else translated_text,
+            "es": translated_text if target_lang == "es" else original_text
+        }
+        await websocket.send_text(json.dumps(payload))
     except Exception:
         return
 
@@ -299,26 +299,23 @@ async def synthesise_and_stream(
         return
 
     loop = asyncio.get_running_loop()
+    
+    # Configure language-specific synthesis engines dynamically
+    voice_code = "af_bella" # Standard cross-lingual fallback profile
+    kokoro_lang = "es" if target_lang == "es" else "en-us"
 
     def _generate_chunks():
         try:
-            # Unpack the full audio array and sample rate directly from the tuple
             samples, sample_rate = kokoro_pipeline.create(
-                text, voice="af_bella", speed=1.0, lang="es"
+                translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
             )
             
-            # Slice the full array into smaller windows (e.g., 2400 samples = 100ms blocks at 24kHz)
-            # This allows the downstream executor/WebSocket loop to stream blocks sequentially
             chunk_size = 2400
             for i in range(0, len(samples), chunk_size):
                 yield samples[i : i + chunk_size]
 
         except Exception as exc:
             logger.error(f"Kokoro voice synthesis error: {exc}")
-            logger.info(
-                "If the error mentions a missing voice, check your voices.json configuration. "
-                "Available voices vary by kokoro-onnx version."
-            )
 
     try:
         chunks = await loop.run_in_executor(None, lambda: list(_generate_chunks()))
@@ -328,7 +325,6 @@ async def synthesise_and_stream(
 
     for audio_array in chunks:
         if audio_array is None or len(audio_array) == 0:
-            # If an error occurred inside the generator, it could yield an empty array or stop early
             continue
         pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
         try:
@@ -346,12 +342,16 @@ async def synthesise_and_stream(
 @app.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket):
     await websocket.accept()
+    
+    # Extract structural routing values directly from initialization queries
+    params = websocket.query_params
+    source_lang = params.get("source", "en").lower()
+    target_lang = params.get("target", "es").lower()
+    
     session_id = str(uuid.uuid4())[:8]
-    state = SessionState(session_id)
-    logger.info(f"[{session_id}] Client connected.")
+    state = SessionState(session_id, source_lang, target_lang)
+    logger.info(f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}")
 
-    # Lock ensures only one transcription pipeline runs at a time per session,
-    # preventing double-processing if two silence triggers fire close together.
     processing_lock = asyncio.Lock()
 
     async def process_utterance():
@@ -372,34 +372,26 @@ async def ws_stream(websocket: WebSocket):
             logger.warning(f"[{session_id}] ⚠️  Audio decode returned None — buffer too short or corrupt. ({len(raw)} bytes)")
             return
 
-        logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio...")
-        english = await transcribe(audio)
-        if not english:
-            logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript — was the audio too quiet or noisy?")
+        logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio via '{state.source_lang}' stream config...")
+        original_text = await transcribe(audio, state.source_lang)
+        if not original_text:
+            logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript.")
             return
 
-        logger.info(f"[{session_id}] 🔄 Translating: {english!r}")
-        spanish = await translate_to_spanish(english)
-        if not spanish:
-            logger.warning(f"[{session_id}] ⚠️  Translation returned empty — check Ollama is running and llama3.2 is pulled.")
+        logger.info(f"[{session_id}] 🔄 Translating: {original_text!r}")
+        translated_text = await translate_text(original_text, state.source_lang, state.target_lang)
+        if not translated_text:
+            logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
             return
 
-        await synthesise_and_stream(spanish, websocket, english)
+        await synthesise_and_stream(translated_text, websocket, original_text, state.source_lang, state.target_lang)
 
-    # ── Main receive loop ──────────────────────────────────────────────────
-    # VAD strategy: the browser computes RMS dBFS for each 100ms chunk and
-    # sends it as a JSON "vad" message alongside the binary audio chunks.
-    # This sidesteps the problem of trying to decode individual WebM chunks
-    # on the server (WebM requires the full container header to decode).
-    # Per-session silence threshold — can be updated by the client at runtime
     vad_silence_db: float = VAD_SILENCE_DB
 
     try:
         while True:
             message = await websocket.receive()
 
-            # Starlette sends a disconnect dict instead of raising WebSocketDisconnect
-            # when using the raw receive() method. Check for it explicitly.
             if message.get("type") == "websocket.disconnect":
                 raise WebSocketDisconnect(code=message.get("code", 1000))
 
@@ -416,7 +408,6 @@ async def ws_stream(websocket: WebSocket):
 
                 msg_type = msg.get("type")
 
-                # Allow the client to update the silence threshold at runtime
                 if msg_type == "set_threshold":
                     new_db = float(msg.get("db", VAD_SILENCE_DB))
                     vad_silence_db = max(-60.0, min(-10.0, new_db))
@@ -432,7 +423,6 @@ async def ws_stream(websocket: WebSocket):
 
                 logger.debug(f"[{session_id}] VAD {db:.1f} dBFS {'🗣' if is_speech else '🔇'}")
 
-                # Send live dB back to the client so the UI meter is accurate
                 try:
                     await websocket.send_text(json.dumps({"type": "vad_echo", "db": db}))
                 except Exception:
