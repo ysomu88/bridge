@@ -112,7 +112,7 @@ app = FastAPI(title="Bridge", lifespan=lifespan)
 #
 # If you're getting false triggers from background noise, raise this value.
 # Typical speech is around -20 to -10 dBFS. A quiet room idles at -50 to -40.
-VAD_SILENCE_DB: float = -35.0       # dBFS below which we call it silence
+VAD_SILENCE_DB: float = -30.0       # dBFS below which we call it silence
 VAD_SILENCE_DURATION_S: float = 0.8 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
 
@@ -349,17 +349,22 @@ async def ws_stream(websocket: WebSocket):
             return
 
         loop = asyncio.get_running_loop()
+        logger.info(f"[{session_id}] 🔄 Decoding {len(raw)} bytes of audio...")
         audio = await loop.run_in_executor(None, webm_bytes_to_float32, raw)
         if audio is None:
-            logger.debug(f"[{session_id}] Audio too short or undecodable — skipped.")
+            logger.warning(f"[{session_id}] ⚠️  Audio decode returned None — buffer too short or corrupt. ({len(raw)} bytes)")
             return
 
+        logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio...")
         english = await transcribe(audio)
         if not english:
+            logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript — was the audio too quiet or noisy?")
             return
 
+        logger.info(f"[{session_id}] 🔄 Translating: {english!r}")
         spanish = await translate_to_spanish(english)
         if not spanish:
+            logger.warning(f"[{session_id}] ⚠️  Translation returned empty — check Ollama is running and llama3.2 is pulled.")
             return
 
         await synthesise_and_stream(spanish, websocket, english)
@@ -375,6 +380,11 @@ async def ws_stream(websocket: WebSocket):
     try:
         while True:
             message = await websocket.receive()
+
+            # Starlette sends a disconnect dict instead of raising WebSocketDisconnect
+            # when using the raw receive() method. Check for it explicitly.
+            if message.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(code=message.get("code", 1000))
 
             # ── Binary audio chunk ─────────────────────────────────────
             if "bytes" in message and message["bytes"]:
@@ -433,8 +443,11 @@ async def ws_stream(websocket: WebSocket):
                             state.silence_start = None
                             asyncio.create_task(process_utterance())
 
-    except WebSocketDisconnect:
-        logger.info(f"[{session_id}] Client disconnected.")
+    except (WebSocketDisconnect, RuntimeError) as exc:
+        if isinstance(exc, RuntimeError) and "disconnect" not in str(exc).lower():
+            logger.error(f"[{session_id}] Unexpected error: {exc}", exc_info=True)
+        else:
+            logger.info(f"[{session_id}] Client disconnected.")
         if state.has_voice and len(state.get_buffer_bytes()) > 0:
             logger.info(f"[{session_id}] Processing final utterance on disconnect.")
             asyncio.create_task(process_utterance())
