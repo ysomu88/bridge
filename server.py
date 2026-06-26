@@ -339,10 +339,12 @@ async def _synthesise_piper(
     def _generate():
         buf = _io.BytesIO()
         with _wave.open(buf, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)                        # 16-bit PCM
+            wav.setframerate(voice.config.sample_rate) # 22050 Hz for Thorsten
             voice.synthesize(text, wav)
         buf.seek(0)
         with _wave.open(buf, "rb") as wav:
-            # Read raw int16 PCM frames
             return wav.readframes(wav.getnframes()), wav.getframerate()
 
     try:
