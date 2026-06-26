@@ -23,6 +23,12 @@ nvidia-cudnn-cu12
 # ── Text-to-Speech ────────────────────────────────────────────────────────────
 kokoro-onnx>=0.5.0     # 82M-param ONNX TTS; covers EN, ES, FR, IT, JA, ZH, HI, PT
 
+# ── Piper TTS (Korean, German) ───────────────────────────────────────────
+# Required for languages not covered by kokoro-onnx.
+# Voice model files (.onnx + .onnx.json) must be downloaded separately
+# into the piper_voices/ directory — see DOCUMENTATION.md for instructions.
+piper-tts
+
 # ── Phonemization (required for non-English TTS) ─────────────────────────────
 # kokoro-onnx uses phonemizer + espeak-ng to convert text to phonemes for
 # non-English languages. phonemizer-fork is installed as a transitive dependency

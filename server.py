@@ -59,6 +59,7 @@ logger = logging.getLogger("bridge")
 # ---------------------------------------------------------------------------
 whisper_model: Optional[WhisperModel] = None
 kokoro_pipeline = None
+piper_voices: dict = {}  # lang_code -> PiperVoice instance
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,31 @@ async def lifespan(app: FastAPI):
         logger.info("TTS disabled — fix the error above and restart to enable audio output.")
         kokoro_pipeline = None
 
+    # ── Piper TTS (Korean, German) ────────────────────────────────────────
+    try:
+        from piper import PiperVoice  # type: ignore
+        import wave
+
+        PIPER_VOICE_FILES = {
+            "ko": ("piper_voices/piper-kss-korean.onnx", "piper_voices/piper-kss-korean.onnx.json"),
+            "de": ("piper_voices/de_DE-thorsten-high.onnx", "piper_voices/de_DE-thorsten-high.onnx.json"),
+        }
+
+        for lang, (model_path, config_path) in PIPER_VOICE_FILES.items():
+            if os.path.exists(model_path) and os.path.exists(config_path):
+                try:
+                    piper_voices[lang] = PiperVoice.load(model_path, config_path=config_path, use_cuda=False)
+                    logger.info(f"✅ Piper voice loaded for '{lang}' ({model_path})")
+                except Exception as exc:
+                    logger.warning(f"⚠️  Piper failed to load voice for '{lang}': {exc}")
+            else:
+                logger.warning(
+                    f"⚠️  Piper voice files not found for '{lang}'. "
+                    f"Download to: {model_path} — see DOCUMENTATION.md for instructions."
+                )
+    except ImportError:
+        logger.warning("piper-tts not installed — Korean/German TTS disabled. Run: uv pip install piper-tts")
+
     # ── Ollama connectivity check ───────────────────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -118,6 +144,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down — releasing model resources.")
     whisper_model = None
     kokoro_pipeline = None
+    piper_voices.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +267,7 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
         "en": "English", "es": "Spanish", "fr": "French",
         "it": "Italian", "ja": "Japanese", "zh": "Chinese",
         "ko": "Korean",  "pt": "Portuguese", "hi": "Hindi",
+        "de": "German",  "te": "Telugu",
     }
     src_name = LANGUAGE_NAMES.get(source_lang, source_lang.upper())
     tgt_name = LANGUAGE_NAMES.get(target_lang, target_lang.upper())
@@ -292,6 +320,59 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# TTS via Piper (Korean, German)
+# ---------------------------------------------------------------------------
+async def _synthesise_piper(
+    text: str,
+    target_lang: str,
+    websocket: WebSocket,
+    loop,
+) -> None:
+    """Synthesise text using Piper and stream raw int16 PCM back to client."""
+    import io as _io
+    import wave as _wave
+
+    voice = piper_voices.get(target_lang)
+    if voice is None:
+        return
+
+    def _generate():
+        buf = _io.BytesIO()
+        with _wave.open(buf, "wb") as wav:
+            voice.synthesize(text, wav)
+        buf.seek(0)
+        with _wave.open(buf, "rb") as wav:
+            # Read raw int16 PCM frames
+            return wav.readframes(wav.getnframes()), wav.getframerate()
+
+    try:
+        pcm_bytes, sample_rate = await loop.run_in_executor(None, _generate)
+    except Exception as exc:
+        logger.error(f"Piper synthesis error for '{target_lang}': {exc}")
+        return
+
+    # Piper outputs at 22050 Hz — send sample rate so client can adapt
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception:
+        return
+
+    # Stream in chunks
+    CHUNK = 4800  # ~100 ms at 22050 Hz (int16 = 2 bytes per sample)
+    for i in range(0, len(pcm_bytes), CHUNK * 2):
+        chunk = pcm_bytes[i : i + CHUNK * 2]
+        if not chunk:
+            continue
+        try:
+            await websocket.send_bytes(chunk)
+        except Exception:
+            logger.warning("WebSocket closed during Piper TTS streaming.")
+            return
+
+    logger.info(f"🔊 Piper TTS stream complete ({target_lang}).")
+
+
+# ---------------------------------------------------------------------------
 # TTS via Kokoro-82M
 # ---------------------------------------------------------------------------
 async def synthesise_and_stream(
@@ -324,7 +405,20 @@ async def synthesise_and_stream(
 
     loop = asyncio.get_running_loop()
     
-    # Kokoro language codes and default voices per language
+    # ── Route to Piper for languages Kokoro doesn't support ─────────────
+    PIPER_LANGUAGES = {"ko", "de"}
+
+    if target_lang in PIPER_LANGUAGES:
+        if target_lang not in piper_voices:
+            logger.warning(
+                f"Piper voice for '{target_lang}' not loaded — subtitles only. "
+                f"Download the voice files and place them in piper_voices/."
+            )
+            return
+        await _synthesise_piper(translated_text, target_lang, websocket, loop)
+        return
+
+    # ── Kokoro for all other languages ────────────────────────────────────
     KOKORO_LANG_MAP = {
         "en": ("en-us", "af_heart"),
         "es": ("es",    "ef_dora"),
@@ -335,11 +429,11 @@ async def synthesise_and_stream(
         "hi": ("hi",    "hf_alpha"),
         "pt": ("pt-br", "pf_dora"),
     }
-    # Korean has no voice in this kokoro-onnx build — subtitles only until Piper is added
-    KOKORO_UNSUPPORTED = {"ko"}
+    # Telugu has no voice available in either Kokoro or official Piper — subtitles only
+    KOKORO_UNSUPPORTED = {"te"}
 
     if target_lang in KOKORO_UNSUPPORTED:
-        logger.warning(f"TTS not available for '{target_lang}' in this kokoro-onnx version — subtitles only.")
+        logger.warning(f"TTS not yet available for '{target_lang}' — subtitles only.")
         return
 
     kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
@@ -349,11 +443,9 @@ async def synthesise_and_stream(
             samples, sample_rate = kokoro_pipeline.create(
                 translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
             )
-            
             chunk_size = 2400
             for i in range(0, len(samples), chunk_size):
                 yield samples[i : i + chunk_size]
-
         except Exception as exc:
             logger.error(f"Kokoro voice synthesis error: {exc}")
 

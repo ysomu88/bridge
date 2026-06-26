@@ -263,6 +263,8 @@
       <option value="ko">🇰🇷 Korean</option>
       <option value="pt">🇧🇷 Portuguese</option>
       <option value="hi">🇮🇳 Hindi</option>
+      <option value="de">🇩🇪 German</option>
+      <option value="te">🇮🇳 Telugu</option>
     </select>
     <button class="lang-swap-btn" id="btn-swap" title="Swap languages">⇌</button>
     <label>To</label>
@@ -276,6 +278,8 @@
       <option value="ko">🇰🇷 Korean</option>
       <option value="pt">🇧🇷 Portuguese</option>
       <option value="hi">🇮🇳 Hindi</option>
+      <option value="de">🇩🇪 German</option>
+      <option value="te">🇮🇳 Telugu</option>
     </select>
   </div>
 
@@ -368,6 +372,8 @@
       ko: { label: "Korean",     transcribe: "음성을 기다리는 중…",           translate: "번역을 기다리는 중…"           },
       pt: { label: "Portuguese", transcribe: "Aguardando fala…",          translate: "Aguardando tradução…"      },
       hi: { label: "Hindi",       transcribe: "बोलने की प्रतीक्षा है…",       translate: "अनुवाद की प्रतीक्षा है…"     },
+      de: { label: "German",      transcribe: "Warte auf Sprache…",           translate: "Warte auf Übersetzung…"        },
+      te: { label: "Telugu",      transcribe: "మాట్లాడటానికి వేచి ఉంది…",      translate: "అనువాదం కోసం వేచి ఉంది…"      },
     };
 
     // ── State ─────────────────────────────────────────────────────────
@@ -379,9 +385,10 @@
     let scriptNode    = null;
     let micSource     = null;
 
-    let playbackCtx   = null;
-    let nextPlayTime  = 0;
-    const SAMPLE_RATE = 24000;
+    let playbackCtx    = null;
+    let nextPlayTime   = 0;
+    const SAMPLE_RATE  = 24000;  // Kokoro default
+    let activeSampleRate = SAMPLE_RATE;  // may be updated by tts_config for Piper
 
     let silenceThresholdDb = parseFloat(thresholdSlider.value);
 
@@ -505,6 +512,16 @@
             const msg = JSON.parse(evt.data);
             if (msg.type === "subtitle") {
               updateSubtitles(msg.src, msg.tgt);
+            } else if (msg.type === "tts_config") {
+              // Piper outputs at 22050 Hz vs Kokoro's 24000 Hz — recreate context
+              if (msg.sample_rate && msg.sample_rate !== SAMPLE_RATE) {
+                activeSampleRate = msg.sample_rate;
+                if (playbackCtx && playbackCtx.state !== "closed") {
+                  playbackCtx.close();
+                }
+                playbackCtx  = new AudioContext({ sampleRate: activeSampleRate });
+                nextPlayTime = 0;
+              }
             }
           } catch (e) {
             console.warn("[WS] Non-JSON text:", evt.data);
