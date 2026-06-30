@@ -35,7 +35,7 @@ piper-tts
 # playback. ~2-3 GB VRAM. Requires PyTorch with CUDA — installed automatically
 # as a transitive dependency, but verify your torch build matches your CUDA
 # version if you hit "CUDA not available" at startup.
-chatterbox-tts
+tts-chatterbox   # community fork with Python 3.12 + Windows support
 torchaudio
 
 # ── Phonemization (required for non-English TTS) ─────────────────────────────
