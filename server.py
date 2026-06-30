@@ -40,7 +40,7 @@ from typing import Optional
 import httpx
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 from faster_whisper import WhisperModel
 
@@ -59,7 +59,15 @@ logger = logging.getLogger("bridge")
 # ---------------------------------------------------------------------------
 whisper_model: Optional[WhisperModel] = None
 kokoro_pipeline = None
-piper_voices: dict = {}  # lang_code -> PiperVoice instance
+piper_voices: dict = {}     # lang_code -> PiperVoice instance
+chatterbox_model = None     # ChatterboxMultilingualTTS instance, shared across all cloned-voice sessions
+voice_profiles: dict = {}   # voice_id -> absolute path to the user's reference WAV clip
+
+VOICE_SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "voice_samples")
+CHATTERBOX_LANGUAGES = {
+    "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it",
+    "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +75,7 @@ piper_voices: dict = {}  # lang_code -> PiperVoice instance
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global whisper_model, kokoro_pipeline
+    global whisper_model, kokoro_pipeline, chatterbox_model
 
     # ── Whisper (STT) ──────────────────────────────────────────────────────
     logger.info("Loading faster-whisper 'base' model on CUDA (int8)…")
@@ -124,6 +132,29 @@ async def lifespan(app: FastAPI):
     except ImportError:
         logger.warning("piper-tts not installed — Korean/German TTS disabled. Run: uv pip install piper-tts")
 
+    # ── Chatterbox Multilingual (voice cloning) ─────────────────────────────
+    try:
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
+
+        logger.info("Loading Chatterbox Multilingual (voice cloning, ~2-3 GB VRAM)…")
+        try:
+            chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
+            logger.info("✅ Chatterbox Multilingual loaded on CUDA.")
+        except Exception as exc:
+            logger.warning(f"CUDA unavailable for Chatterbox ({exc}). Falling back to CPU — cloning will be slow.")
+            chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device="cpu")
+            logger.info("✅ Chatterbox Multilingual loaded on CPU.")
+    except ImportError:
+        logger.warning(
+            "chatterbox-tts not installed — voice cloning disabled. Run: uv pip install chatterbox-tts"
+        )
+        chatterbox_model = None
+    except Exception as exc:
+        logger.error(f"Chatterbox init failed: {exc}")
+        chatterbox_model = None
+
+    os.makedirs(VOICE_SAMPLES_DIR, exist_ok=True)
+
     # ── Ollama connectivity check ───────────────────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -145,6 +176,8 @@ async def lifespan(app: FastAPI):
     whisper_model = None
     kokoro_pipeline = None
     piper_voices.clear()
+    chatterbox_model = None
+    voice_profiles.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -169,10 +202,11 @@ class SessionState:
 
     CHUNK_SR: int = 16_000
 
-    def __init__(self, session_id: str, source_lang: str = "en", target_lang: str = "es"):
+    def __init__(self, session_id: str, source_lang: str = "en", target_lang: str = "es", voice_id: Optional[str] = None):
         self.session_id = session_id
         self.source_lang = source_lang
         self.target_lang = target_lang
+        self.voice_id = voice_id  # cloned voice profile id, or None for preset voices
         self.audio_buffer = io.BytesIO()
         self.has_voice: bool = False
         self.speech_start: Optional[float] = None
@@ -375,6 +409,123 @@ async def _synthesise_piper(
 
 
 # ---------------------------------------------------------------------------
+# TTS via Chatterbox Multilingual (voice cloning)
+# ---------------------------------------------------------------------------
+async def _synthesise_chatterbox(
+    text: str,
+    target_lang: str,
+    websocket: WebSocket,
+    loop,
+    voice_id: str,
+) -> None:
+    """
+    Synthesise text in the user's cloned voice via Chatterbox Multilingual,
+    then stream raw int16 PCM back to the client.
+    """
+    if chatterbox_model is None:
+        logger.warning("Chatterbox not loaded — falling back to preset voice.")
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    ref_path = voice_profiles.get(voice_id)
+    if ref_path is None or not os.path.exists(ref_path):
+        logger.warning(f"Voice profile '{voice_id}' not found on disk — falling back to preset voice.")
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    if target_lang not in CHATTERBOX_LANGUAGES:
+        logger.warning(
+            f"Chatterbox does not support '{target_lang}' — falling back to preset voice for this language."
+        )
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    def _generate():
+        import torchaudio as ta  # local import — heavy, only needed here
+
+        # cfg_weight=0 avoids the cloned voice inheriting an accent from the
+        # reference clip's language when target_lang differs from it.
+        wav_tensor = chatterbox_model.generate(
+            text,
+            language_id=target_lang,
+            audio_prompt_path=ref_path,
+            cfg_weight=0.3,
+            exaggeration=0.5,
+        )
+        return wav_tensor, chatterbox_model.sr
+
+    try:
+        wav_tensor, sample_rate = await loop.run_in_executor(None, _generate)
+    except Exception as exc:
+        logger.error(f"Chatterbox synthesis error for voice '{voice_id}': {exc}")
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    # wav_tensor is a torch tensor shaped [1, n_samples], float32 in [-1, 1]
+    audio_array = wav_tensor.squeeze(0).cpu().numpy()
+
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception:
+        return
+
+    pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+    pcm_bytes = pcm_int16.tobytes()
+
+    CHUNK = 4800  # ~100-200ms depending on sample rate, 2 bytes/sample
+    for i in range(0, len(pcm_bytes), CHUNK * 2):
+        chunk = pcm_bytes[i : i + CHUNK * 2]
+        if not chunk:
+            continue
+        try:
+            await websocket.send_bytes(chunk)
+        except Exception:
+            logger.warning("WebSocket closed during Chatterbox TTS streaming.")
+            return
+
+    logger.info(f"🎙️  Chatterbox cloned-voice TTS stream complete ({target_lang}, voice={voice_id}).")
+
+
+async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket: WebSocket, loop) -> None:
+    """If cloning fails for any reason, fall back to the normal preset-voice pipeline."""
+    PIPER_LANGUAGES = {"ko", "de"}
+    if target_lang in PIPER_LANGUAGES and target_lang in piper_voices:
+        await _synthesise_piper(text, target_lang, websocket, loop)
+        return
+
+    if kokoro_pipeline is None:
+        logger.warning("No fallback TTS engine available — subtitles only.")
+        return
+
+    KOKORO_LANG_MAP = {
+        "en": ("en-us", "af_heart"), "es": ("es", "ef_dora"), "fr": ("fr-fr", "ff_siwis"),
+        "it": ("it", "if_sara"), "ja": ("ja", "jf_alpha"), "zh": ("cmn", "zf_xiaobei"),
+        "hi": ("hi", "hf_alpha"), "pt": ("pt-br", "pf_dora"),
+    }
+    kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
+
+    def _generate_chunks():
+        try:
+            samples, _ = kokoro_pipeline.create(text, voice=voice_code, speed=1.0, lang=kokoro_lang)
+            chunk_size = 2400
+            for i in range(0, len(samples), chunk_size):
+                yield samples[i : i + chunk_size]
+        except Exception as exc:
+            logger.error(f"Kokoro fallback synthesis error: {exc}")
+
+    try:
+        chunks = await loop.run_in_executor(None, lambda: list(_generate_chunks()))
+    except Exception as exc:
+        logger.error(f"Kokoro fallback executor error: {exc}")
+        return
+
+    for audio_array in chunks:
+        if audio_array is None or len(audio_array) == 0:
+            continue
+        pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+        try:
+            await websocket.send_bytes(pcm_int16.tobytes())
+        except Exception:
+            return
+
+
+# ---------------------------------------------------------------------------
 # TTS via Kokoro-82M
 # ---------------------------------------------------------------------------
 async def synthesise_and_stream(
@@ -383,6 +534,7 @@ async def synthesise_and_stream(
     original_text: str,
     source_lang: str,
     target_lang: str,
+    session_voice_id: Optional[str] = None,
 ) -> None:
     """Synthesise target text and stream PCM bytes back to client with layout routing indicators."""
     if not translated_text:
@@ -401,12 +553,13 @@ async def synthesise_and_stream(
     except Exception:
         return
 
-    if kokoro_pipeline is None:
-        logger.warning("Kokoro not available — skipping TTS.")
+    loop = asyncio.get_running_loop()
+
+    # ── Route to a cloned voice via Chatterbox if this session has one ──
+    if session_voice_id and session_voice_id in voice_profiles:
+        await _synthesise_chatterbox(translated_text, target_lang, websocket, loop, session_voice_id)
         return
 
-    loop = asyncio.get_running_loop()
-    
     # ── Route to Piper for languages Kokoro doesn't support ─────────────
     PIPER_LANGUAGES = {"ko", "de"}
 
@@ -418,6 +571,10 @@ async def synthesise_and_stream(
             )
             return
         await _synthesise_piper(translated_text, target_lang, websocket, loop)
+        return
+
+    if kokoro_pipeline is None:
+        logger.warning("Kokoro not available — skipping TTS.")
         return
 
     # ── Kokoro for all other languages ────────────────────────────────────
@@ -471,6 +628,108 @@ async def synthesise_and_stream(
 
 
 # ---------------------------------------------------------------------------
+# Voice profile management (REST)
+# ---------------------------------------------------------------------------
+MAX_VOICE_SAMPLE_BYTES = 15 * 1024 * 1024  # 15 MB ceiling — a 10-30s WAV clip is well under this
+
+
+@app.post("/api/voice/upload")
+async def upload_voice_sample(file: UploadFile = File(...)):
+    """
+    Accept a short (10-30s) reference audio clip and register it as a voice
+    profile. Returns a voice_id the client passes to /ws/stream to use this
+    cloned voice for TTS playback.
+    """
+    if chatterbox_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Voice cloning is not available — chatterbox-tts is not installed or failed to load.",
+        )
+
+    contents = await file.read()
+    if len(contents) > MAX_VOICE_SAMPLE_BYTES:
+        raise HTTPException(status_code=413, detail="Voice sample too large — keep clips under 15 MB (~30s).")
+    if len(contents) < 1000:
+        raise HTTPException(status_code=400, detail="Voice sample too short or empty.")
+
+    voice_id = str(uuid.uuid4())[:12]
+    raw_ext = os.path.splitext(file.filename or "sample.webm")[1] or ".webm"
+    raw_path = os.path.join(VOICE_SAMPLES_DIR, f"{voice_id}_raw{raw_ext}")
+    wav_path = os.path.join(VOICE_SAMPLES_DIR, f"{voice_id}.wav")
+
+    try:
+        with open(raw_path, "wb") as f:
+            f.write(contents)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save voice sample: {exc}")
+
+    # Convert to WAV — the browser sends WebM/Opus, but Chatterbox's
+    # audio_prompt_path needs a format torchaudio can load reliably.
+    #
+    # torchaudio's WebM/Opus support depends on its ffmpeg backend being
+    # correctly detected, which is unreliable on Windows even with ffmpeg
+    # on PATH. We try torchaudio first, then fall back to soundfile, which
+    # has broader native codec support via libsndfile.
+    loop = asyncio.get_running_loop()
+
+    def _convert_to_wav():
+        try:
+            import torchaudio as ta
+            waveform, sr = ta.load(raw_path)
+            ta.save(wav_path, waveform, sr)
+            return
+        except Exception as exc:
+            logger.warning(f"torchaudio could not decode voice sample, trying soundfile: {exc}")
+
+        import soundfile as sf
+        data, sr = sf.read(raw_path)
+        sf.write(wav_path, data, sr)
+
+    try:
+        await loop.run_in_executor(None, _convert_to_wav)
+    except Exception as exc:
+        logger.error(f"Failed to convert voice sample to WAV (tried torchaudio and soundfile): {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not process the audio sample. This is usually an audio codec issue — "
+                "try recording again, or check that ffmpeg is installed and on PATH."
+            ),
+        )
+    finally:
+        # Raw upload is no longer needed once the WAV conversion succeeds
+        if os.path.exists(raw_path):
+            os.remove(raw_path)
+
+    voice_profiles[voice_id] = wav_path
+    logger.info(f"🎙️  Registered new voice profile '{voice_id}' ({len(contents)} bytes) at {wav_path}")
+
+    return {"voice_id": voice_id, "status": "registered"}
+
+
+@app.delete("/api/voice/{voice_id}")
+async def delete_voice_sample(voice_id: str):
+    """Remove a voice profile and its underlying audio file."""
+    path = voice_profiles.pop(voice_id, None)
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception as exc:
+            logger.warning(f"Failed to delete voice sample file {path}: {exc}")
+    return {"voice_id": voice_id, "status": "deleted"}
+
+
+@app.get("/api/voice/status")
+async def voice_cloning_status():
+    """Lets the client check whether voice cloning is available before showing the UI for it."""
+    return {
+        "available": chatterbox_model is not None,
+        "active_profiles": len(voice_profiles),
+        "supported_languages": sorted(CHATTERBOX_LANGUAGES),
+    }
+
+
+# ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
 @app.websocket("/ws/stream")
@@ -481,10 +740,12 @@ async def ws_stream(websocket: WebSocket):
     params = websocket.query_params
     source_lang = params.get("source", "en").lower()
     target_lang = params.get("target", "es").lower()
-    
+    voice_id = params.get("voice_id", "").strip() or None
+
     session_id = str(uuid.uuid4())[:8]
-    state = SessionState(session_id, source_lang, target_lang)
-    logger.info(f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}")
+    state = SessionState(session_id, source_lang, target_lang, voice_id)
+    voice_note = f" | Voice: {voice_id}" if voice_id else " | Voice: preset"
+    logger.info(f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}{voice_note}")
 
     processing_lock = asyncio.Lock()
 
@@ -518,7 +779,9 @@ async def ws_stream(websocket: WebSocket):
             logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
             return
 
-        await synthesise_and_stream(translated_text, websocket, original_text, state.source_lang, state.target_lang)
+        await synthesise_and_stream(
+            translated_text, websocket, original_text, state.source_lang, state.target_lang, state.voice_id
+        )
 
     vad_silence_db: float = VAD_SILENCE_DB
 

@@ -8,6 +8,9 @@ voices.json
 # Piper voice model files (downloaded separately — see DOCUMENTATION.md)
 piper_voices/
 
+# User-recorded voice cloning reference clips — personal audio, never commit
+voice_samples/
+
 # ── Python virtual environments ────────────────────────────────────────────
 .venv/
 venv/

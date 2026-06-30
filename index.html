@@ -234,6 +234,64 @@
     .history-item .hi-right { font-family: var(--font-body); font-size: 0.88rem; color: var(--text-mid); border-left: 2px solid var(--accent-es); padding-left: 0.5rem; }
     .empty-log { color: var(--text-lo); font-size: 0.82rem; font-style: italic; text-align: center; padding: 2rem 0; }
 
+    /* ── Voice cloning panel ── */
+    .voice-panel {
+      width: 100%; max-width: 860px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      display: flex; flex-direction: column; gap: 0.85rem;
+    }
+    .voice-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .voice-panel-title {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text-lo);
+    }
+    .voice-toggle {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.78rem; color: var(--text-mid); cursor: pointer;
+      user-select: none;
+    }
+    .voice-toggle input[type=checkbox] {
+      width: 16px; height: 16px; accent-color: var(--accent-en); cursor: pointer;
+    }
+    .voice-toggle.disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .voice-record-row {
+      display: flex; align-items: center; gap: 0.75rem;
+    }
+    .btn-record {
+      flex: 1; padding: 0.65rem 1.1rem; border: none; border-radius: 8px;
+      font-family: var(--font-display); font-size: 0.82rem; font-weight: 600;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+      background: var(--surface-2); color: var(--text-hi); border: 1px solid var(--border);
+      transition: border-color var(--transition), color var(--transition);
+    }
+    .btn-record:hover:not(:disabled) { border-color: var(--accent-es); color: var(--accent-es); }
+    .btn-record:disabled { opacity: 0.32; cursor: not-allowed; }
+    .btn-record.recording {
+      border-color: var(--red); color: var(--red);
+      animation: pulse 0.8s ease-in-out infinite;
+    }
+
+    .voice-status-text {
+      font-family: var(--font-body); font-size: 0.8rem; color: var(--text-mid);
+      flex-shrink: 0; min-width: 110px; text-align: right;
+    }
+    .voice-status-text.ready { color: var(--green); }
+    .voice-status-text.recording { color: var(--red); }
+
+    .voice-hint {
+      font-family: var(--font-body); font-style: italic; font-size: 0.74rem;
+      color: var(--text-lo); line-height: 1.5;
+    }
+
+    .voice-unavailable-note {
+      font-size: 0.76rem; color: var(--text-lo); font-style: italic;
+    }
+
     @media (max-width: 600px) {
       .subtitle-panel { grid-template-columns: 1fr; }
       .history-item   { grid-template-columns: 1fr; }
@@ -281,6 +339,27 @@
       <option value="de">🇩🇪 German</option>
       <option value="te">🇮🇳 Telugu</option>
     </select>
+  </div>
+
+  <!-- Voice cloning panel -->
+  <div class="voice-panel" id="voice-panel">
+    <div class="voice-panel-header">
+      <span class="voice-panel-title">Playback Voice</span>
+      <label class="voice-toggle" id="voice-toggle-wrap">
+        <input type="checkbox" id="use-cloned-voice" disabled />
+        <span id="voice-toggle-label">Use my cloned voice</span>
+      </label>
+    </div>
+
+    <div class="voice-record-row">
+      <button class="btn-record" id="btn-record-voice" disabled>🎙️ Record a 15s sample</button>
+      <span class="voice-status-text" id="voice-status-text">No voice recorded</span>
+    </div>
+
+    <p class="voice-hint" id="voice-hint">
+      Speak naturally for at least 10 seconds in a quiet room. This clip is used to clone your
+      voice locally — nothing leaves your machine.
+    </p>
   </div>
 
   <div class="status-bar">
@@ -361,6 +440,15 @@
     const thresholdValue  = document.getElementById("threshold-value");
     const thresholdMarker = document.getElementById("threshold-marker");
 
+    // Voice cloning refs
+    const voicePanel        = document.getElementById("voice-panel");
+    const voiceToggleWrap    = document.getElementById("voice-toggle-wrap");
+    const useClonedVoiceBox  = document.getElementById("use-cloned-voice");
+    const voiceToggleLabel   = document.getElementById("voice-toggle-label");
+    const btnRecordVoice     = document.getElementById("btn-record-voice");
+    const voiceStatusText    = document.getElementById("voice-status-text");
+    const voiceHint          = document.getElementById("voice-hint");
+
     // ── Language metadata ─────────────────────────────────────────────
     const LANGUAGES = {
       en: { label: "English",    transcribe: "Listening for speech…",    translate: "Waiting for translation…"  },
@@ -392,6 +480,14 @@
 
     let silenceThresholdDb = parseFloat(thresholdSlider.value);
 
+    // Voice cloning state
+    let voiceCloningAvailable = false;
+    let registeredVoiceId     = null;   // set after a successful upload
+    let voiceMediaRecorder    = null;
+    let voiceRecordedChunks   = [];
+    let voiceRecordStream     = null;
+    const VOICE_SAMPLE_MS     = 15000;  // 15 seconds, auto-stops
+
     // ── Language selector logic ───────────────────────────────────────
     function getSource() { return selectSource.value; }
     function getTarget() { return selectTarget.value; }
@@ -408,6 +504,11 @@
       selectSource.disabled = disabled;
       selectTarget.disabled = disabled;
       btnSwap.disabled      = disabled;
+
+      // Lock voice cloning controls during an active session too —
+      // re-recording or toggling mid-conversation would be confusing.
+      btnRecordVoice.disabled = disabled || !voiceCloningAvailable;
+      useClonedVoiceBox.disabled = disabled || !voiceCloningAvailable || !registeredVoiceId;
     }
 
     // Prevent same language on both sides
@@ -469,6 +570,117 @@
     });
     updateThresholdMarker();
 
+    // ── Voice cloning ──────────────────────────────────────────────────
+    async function checkVoiceCloningAvailability() {
+      try {
+        const resp = await fetch("/api/voice/status");
+        const data = await resp.json();
+        voiceCloningAvailable = !!data.available;
+      } catch (e) {
+        voiceCloningAvailable = false;
+      }
+
+      if (voiceCloningAvailable) {
+        btnRecordVoice.disabled = false;
+        voiceStatusText.textContent = "No voice recorded";
+      } else {
+        voicePanel.classList.add("voice-unavailable");
+        voiceHint.innerHTML =
+          "Voice cloning isn't available on this server — chatterbox-tts isn't installed. " +
+          "Translations will use a preset voice instead.";
+        voiceStatusText.textContent = "Unavailable";
+        btnRecordVoice.disabled = true;
+        useClonedVoiceBox.disabled = true;
+      }
+    }
+
+    async function startVoiceRecording() {
+      if (!voiceCloningAvailable || ws || micStream) return; // don't allow mid-session
+
+      try {
+        voiceRecordStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        console.error("[VOICE] Mic permission error:", err);
+        voiceStatusText.textContent = "Mic error";
+        return;
+      }
+
+      voiceRecordedChunks = [];
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus" : "audio/webm";
+      voiceMediaRecorder = new MediaRecorder(voiceRecordStream, { mimeType });
+
+      voiceMediaRecorder.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0) voiceRecordedChunks.push(evt.data);
+      };
+
+      voiceMediaRecorder.onstop = async () => {
+        voiceRecordStream?.getTracks().forEach(t => t.stop());
+        voiceRecordStream = null;
+        btnRecordVoice.classList.remove("recording");
+        btnRecordVoice.textContent = "🎙️ Record a 15s sample";
+        voiceStatusText.textContent = "Uploading…";
+
+        const blob = new Blob(voiceRecordedChunks, { type: mimeType });
+        await uploadVoiceSample(blob);
+      };
+
+      voiceMediaRecorder.start();
+      btnRecordVoice.classList.add("recording");
+      btnRecordVoice.textContent = "⏹ Recording… (auto-stops in 15s)";
+      voiceStatusText.textContent = "Recording…";
+      voiceStatusText.className = "voice-status-text recording";
+
+      // Auto-stop after VOICE_SAMPLE_MS
+      setTimeout(() => {
+        if (voiceMediaRecorder && voiceMediaRecorder.state === "recording") {
+          voiceMediaRecorder.stop();
+        }
+      }, VOICE_SAMPLE_MS);
+    }
+
+    function stopVoiceRecordingManually() {
+      if (voiceMediaRecorder && voiceMediaRecorder.state === "recording") {
+        voiceMediaRecorder.stop();
+      }
+    }
+
+    async function uploadVoiceSample(blob) {
+      const formData = new FormData();
+      formData.append("file", blob, "voice_sample.webm");
+
+      try {
+        const resp = await fetch("/api/voice/upload", { method: "POST", body: formData });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        registeredVoiceId = data.voice_id;
+
+        voiceStatusText.textContent = "Voice ready ✓";
+        voiceStatusText.className = "voice-status-text ready";
+        useClonedVoiceBox.disabled = false;
+        useClonedVoiceBox.checked = true;
+        console.log(`[VOICE] Registered voice profile: ${registeredVoiceId}`);
+      } catch (err) {
+        console.error("[VOICE] Upload failed:", err);
+        voiceStatusText.textContent = "Upload failed";
+        voiceStatusText.className = "voice-status-text";
+        registeredVoiceId = null;
+      }
+    }
+
+    btnRecordVoice.addEventListener("click", () => {
+      if (voiceMediaRecorder && voiceMediaRecorder.state === "recording") {
+        stopVoiceRecordingManually();
+      } else {
+        startVoiceRecording();
+      }
+    });
+
+    checkVoiceCloningAvailability();
+
     // ── Web Audio playback ────────────────────────────────────────────
     function ensurePlaybackCtx() {
       if (!playbackCtx || playbackCtx.state === "closed") {
@@ -498,7 +710,9 @@
     // ── WebSocket ─────────────────────────────────────────────────────
     function connectWebSocket() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${getSource()}&target=${getTarget()}`);
+      const useVoice = useClonedVoiceBox.checked && registeredVoiceId;
+      const voiceParam = useVoice ? `&voice_id=${encodeURIComponent(registeredVoiceId)}` : "";
+      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${getSource()}&target=${getTarget()}${voiceParam}`);
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {

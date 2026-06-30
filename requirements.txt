@@ -12,6 +12,7 @@ httpx>=0.27.0          # Async Ollama REST calls
 
 # ── Audio & data ──────────────────────────────────────────────────────────────
 numpy>=1.26.0
+soundfile>=0.12.1   # fallback decoder for voice sample uploads if torchaudio's ffmpeg backend fails
 
 # ── Speech-to-Text ────────────────────────────────────────────────────────────
 faster-whisper>=1.0.3  # CTranslate2-backed Whisper; supports all Bridge languages natively
@@ -28,6 +29,14 @@ kokoro-onnx>=0.5.0     # 82M-param ONNX TTS; covers EN, ES, FR, IT, JA, ZH, HI, 
 # Voice model files (.onnx + .onnx.json) must be downloaded separately
 # into the piper_voices/ directory — see DOCUMENTATION.md for instructions.
 piper-tts
+
+# ── Voice cloning (Chatterbox Multilingual) ───────────────────────────────
+# Clones a user's voice from a short reference clip and uses it for TTS
+# playback. ~2-3 GB VRAM. Requires PyTorch with CUDA — installed automatically
+# as a transitive dependency, but verify your torch build matches your CUDA
+# version if you hit "CUDA not available" at startup.
+chatterbox-tts
+torchaudio
 
 # ── Phonemization (required for non-English TTS) ─────────────────────────────
 # kokoro-onnx uses phonemizer + espeak-ng to convert text to phonemes for

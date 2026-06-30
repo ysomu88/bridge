@@ -1,7 +1,7 @@
 [project]
 name = "bridge"
-version = "0.2.0"
-description = "Bridge — Local real-time voice-to-voice translation: Whisper + Ollama + Kokoro-82M"
+version = "0.3.0"
+description = "Bridge — Local real-time voice-to-voice translation with optional voice cloning playback"
 requires-python = ">=3.12"
 
 dependencies = [
@@ -15,14 +15,23 @@ dependencies = [
 
     # ── Audio & data ───────────────────────────────────────────
     "numpy>=1.26.0",
+    "soundfile>=0.12.1",   # fallback decoder for voice sample uploads
 
     # ── Translation ────────────────────────────────────────────
     "httpx>=0.27.0",
 
-    # ── TTS ────────────────────────────────────────────────────
-    # Covers EN, ES, FR, IT, JA, ZH (cmn), HI, PT
-    # Korean, German, Telugu coming in a future release
+    # ── TTS — preset voices ────────────────────────────────────
+    # Kokoro covers EN, ES, FR, IT, JA, ZH (cmn), HI, PT
     "kokoro-onnx>=0.5.0",
+
+    # Piper covers KO, DE — voice model files downloaded separately
+    "piper-tts",
+
+    # ── TTS — voice cloning (optional, ~2-3 GB VRAM) ───────────
+    # Clones a short reference clip and uses it for playback across
+    # 23 languages. Telugu is not supported by any current engine.
+    "chatterbox-tts",
+    "torchaudio",
 
     # ── NVIDIA CUDA 12 runtimes ────────────────────────────────
     "nvidia-cublas-cu12",
@@ -43,6 +52,13 @@ index-url = "https://pypi.org/simple"
 # After `uv pip install -r requirements.txt`, if CUDA is not detected for Whisper:
 #   pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.org/whl/cu121
 #
-# eSpeak NG is required for non-English TTS (FR, IT, JA, ZH, HI, PT).
+# eSpeak NG is required for non-English Kokoro TTS (FR, IT, JA, ZH, HI, PT).
 # Install from: https://github.com/espeak-ng/espeak-ng/releases/latest
 # The server sets the required environment variables automatically on startup.
+#
+# Piper voice files (Korean, German) must be downloaded manually into
+# piper_voices/ — see DOCUMENTATION.md.
+#
+# Chatterbox-tts requires PyTorch with CUDA support. If voice cloning loads
+# on CPU instead of CUDA, verify your torch build matches your installed
+# CUDA version.
