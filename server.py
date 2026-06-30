@@ -179,6 +179,17 @@ async def lifespan(app: FastAPI):
     chatterbox_model = None
     voice_profiles.clear()
 
+    # Privacy: delete all voice sample files from disk on shutdown.
+    # Users' recorded voice clips should never persist beyond a single session.
+    if os.path.isdir(VOICE_SAMPLES_DIR):
+        deleted = 0
+        for f in os.listdir(VOICE_SAMPLES_DIR):
+            try:
+                os.remove(os.path.join(VOICE_SAMPLES_DIR, f))
+                deleted += 1
+            except Exception as exc:
+                logger.warning(f"Could not delete voice sample {f}: {exc}")
+        logger.info(f"🗑️  Deleted {deleted} voice sample file(s) from {VOICE_SAMPLES_DIR}.")
 
 # ---------------------------------------------------------------------------
 # FastAPI app
