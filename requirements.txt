@@ -38,6 +38,8 @@ piper-tts
 tts-chatterbox   # community fork with Python 3.12 + Windows support
 torchaudio
 
+python-multipart==0.0.32
+
 # ── Phonemization (required for non-English TTS) ─────────────────────────────
 # kokoro-onnx uses phonemizer + espeak-ng to convert text to phonemes for
 # non-English languages. phonemizer-fork is installed as a transitive dependency
