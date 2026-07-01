@@ -7,19 +7,32 @@ Target: RTX 3070 Ti (8GB VRAM), Windows 11, uv package manager
 import os
 import sys
 
-# Dynamic runtime patching for NVIDIA CUDA DLLs and espeak-ng on Windows
+# ── Windows DLL resolution — MUST run before any CUDA imports ─────────────────
+# ctranslate2 and torch both ship cudnn64_9.dll but ctranslate2's copy is
+# missing cudnnGetLibConfig (added in cuDNN 9.x) which torch requires.
+# We must register torch's lib dir with the Windows DLL loader BEFORE
+# ctranslate2 gets a chance to load its copy, otherwise the symbol is missing
+# and torchaudio fails with [WinError 127].
 if sys.platform == "win32":
-    venv_base = os.path.join(os.path.dirname(__file__), ".venv", "Lib", "site-packages")
-    cublas_path = os.path.join(venv_base, "nvidia", "cublas", "bin")
-    cudnn_path = os.path.join(venv_base, "nvidia", "cudnn", "bin")
+    import ctypes  # noqa: E402
 
-    if os.path.exists(cublas_path):
-        os.environ["PATH"] = cublas_path + os.pathsep + os.environ["PATH"]
-    if os.path.exists(cudnn_path):
-        os.environ["PATH"] = cudnn_path + os.pathsep + os.environ["PATH"]
+    venv_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "Lib", "site-packages")
+    torch_lib = os.path.join(venv_base, "torch", "lib")
+
+    if os.path.exists(torch_lib):
+        # Force-load torch's cuDNN DLL explicitly before anything else can grab it
+        for dll_name in ["cudnn64_9.dll", "cudnn_adv64_9.dll", "cudnn_cnn64_9.dll",
+                         "cudnn_ops64_9.dll"]:
+            dll_path = os.path.join(torch_lib, dll_name)
+            if os.path.exists(dll_path):
+                try:
+                    ctypes.CDLL(dll_path)
+                except OSError:
+                    pass
+        os.add_dll_directory(torch_lib)
+        os.environ["PATH"] = torch_lib + os.pathsep + os.environ["PATH"]
 
     # espeak-ng — required by kokoro-onnx for non-English phonemization
-    # (Chinese, Hindi, Japanese, French, etc.)
     espeak_dir = r"C:\Program Files\eSpeak NG"
     espeak_dll = os.path.join(espeak_dir, "libespeak-ng.dll")
     espeak_exe = os.path.join(espeak_dir, "espeak-ng.exe")

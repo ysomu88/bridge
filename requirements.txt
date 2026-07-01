@@ -43,7 +43,17 @@ piper-tts
 #   uv pip install conformer diffusers einops rotary-embedding-torch encodec vector-quantize-pytorch
 #
 # Then run: uv pip install -r requirements.txt
+
+# ── chatterbox-tts install note ───────────────────────────────────────────────
+# After installing, patch perth API name change (perth==1.0.0 renamed
+# PerthImplicitWatermarker to Perth). Run these four commands:
+#
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\mtl_tts.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\mtl_tts.py"
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\tts.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\tts.py"
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\tts_turbo.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\tts_turbo.py"
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\vc.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\vc.py"
 chatterbox-tts>=0.1.4
+
 perth
 conformer
 diffusers
