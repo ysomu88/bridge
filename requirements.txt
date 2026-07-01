@@ -12,6 +12,7 @@ httpx>=0.27.0          # Async Ollama REST calls
 
 # ── Audio & data ──────────────────────────────────────────────────────────────
 numpy>=1.26.0
+soundfile>=0.12.1   # fallback decoder for voice sample uploads if torchaudio's ffmpeg backend fails
 
 # ── Speech-to-Text ────────────────────────────────────────────────────────────
 faster-whisper>=1.0.3  # CTranslate2-backed Whisper; supports all Bridge languages natively
@@ -22,6 +23,45 @@ nvidia-cudnn-cu12
 
 # ── Text-to-Speech ────────────────────────────────────────────────────────────
 kokoro-onnx>=0.5.0     # 82M-param ONNX TTS; covers EN, ES, FR, IT, JA, ZH, HI, PT
+
+# ── Piper TTS (Korean, German) ───────────────────────────────────────────
+# Required for languages not covered by kokoro-onnx.
+# Voice model files (.onnx + .onnx.json) must be downloaded separately
+# into the piper_voices/ directory — see DOCUMENTATION.md for instructions.
+piper-tts
+
+# ── Voice cloning (Chatterbox Multilingual) ───────────────────────────────
+# Clones a user's voice from a short reference clip and uses it for TTS
+# playback. ~2-3 GB VRAM. Requires PyTorch with CUDA — installed automatically
+# as a transitive dependency, but verify your torch build matches your CUDA
+# version if you hit "CUDA not available" at startup.
+# Install chatterbox-tts and its missing deps manually due to incomplete dependency
+# declarations in the package. Run in this order:
+#
+#   uv pip install "chatterbox-tts>=0.1.4" --no-deps
+#   uv pip install "llvmlite>=0.43.0" "numba>=0.60.0" "librosa>=0.10.0" "perth" --no-deps
+#   uv pip install conformer diffusers einops rotary-embedding-torch encodec vector-quantize-pytorch
+#
+# Then run: uv pip install -r requirements.txt
+
+# ── chatterbox-tts install note ───────────────────────────────────────────────
+# After installing, patch perth API name change (perth==1.0.0 renamed
+# PerthImplicitWatermarker to Perth). Run these four commands:
+#
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\mtl_tts.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\mtl_tts.py"
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\tts.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\tts.py"
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\tts_turbo.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\tts_turbo.py"
+#   (Get-Content ".venv\Lib\site-packages\chatterbox\vc.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\vc.py"
+chatterbox-tts>=0.1.4
+
+perth
+conformer
+diffusers
+einops
+rotary-embedding-torch
+encodec
+vector-quantize-pytorch
+torchaudio
 
 # ── Phonemization (required for non-English TTS) ─────────────────────────────
 # kokoro-onnx uses phonemizer + espeak-ng to convert text to phonemes for

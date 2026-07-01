@@ -1,39 +1,43 @@
-# -- LARGE ML MODEL ASSETS (Local Only) --
+# ── Large ML model assets (local only) ────────────────────────────────────
 model.onnx
 voices.json
 *.onnx
+*.onnx.json
 *.bin
 
-# -- PYTHON VIRTUAL ENVIRONMENTS --
+# Piper voice model files (downloaded separately — see DOCUMENTATION.md)
+piper_voices/
+
+# User-recorded voice cloning reference clips — personal audio, never commit
+voice_samples/
+
+# ── Python virtual environments ────────────────────────────────────────────
 .venv/
 venv/
 ENV/
 env/
 
-# -- PYTHON CACHE & COMPILED BYTECODE --
+# ── Python cache & compiled bytecode ──────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 .pypy_cache/
 
-# -- APPLICATION & IDE CONFIGURATIONS --
+# ── Application & IDE configurations ──────────────────────────────────────
 .env
 .secrets
 .idea/
-
-# Track the team workspace task profiles, but ignore personal workspace states
 .vscode/
 
-# -- OS SPECIFIC FILES (Windows / macOS) --
+# ── OS specific files ──────────────────────────────────────────────────────
 Thumbs.db
 Desktop.ini
 .DS_Store
 
-# -- Other --
+# ── Docs & internal files ─────────────────────────────────────────────────
 TECHNICAL_WALKTHROUGH.md
 docs/*
 
-# -- Launch Scripts --
-!start.bat
+# ── Launch scripts (keep start.ps1, ignore personal tunnel script) ─────────
 run_bridge.ps1
