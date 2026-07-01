@@ -35,10 +35,23 @@ piper-tts
 # playback. ~2-3 GB VRAM. Requires PyTorch with CUDA — installed automatically
 # as a transitive dependency, but verify your torch build matches your CUDA
 # version if you hit "CUDA not available" at startup.
-tts-chatterbox   # community fork with Python 3.12 + Windows support
+# Install chatterbox-tts and its missing deps manually due to incomplete dependency
+# declarations in the package. Run in this order:
+#
+#   uv pip install "chatterbox-tts>=0.1.4" --no-deps
+#   uv pip install "llvmlite>=0.43.0" "numba>=0.60.0" "librosa>=0.10.0" "perth" --no-deps
+#   uv pip install conformer diffusers einops rotary-embedding-torch encodec vector-quantize-pytorch
+#
+# Then run: uv pip install -r requirements.txt
+chatterbox-tts>=0.1.4
+perth
+conformer
+diffusers
+einops
+rotary-embedding-torch
+encodec
+vector-quantize-pytorch
 torchaudio
-
-python-multipart==0.0.32
 
 # ── Phonemization (required for non-English TTS) ─────────────────────────────
 # kokoro-onnx uses phonemizer + espeak-ng to convert text to phonemes for

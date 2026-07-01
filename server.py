@@ -134,15 +134,15 @@ async def lifespan(app: FastAPI):
 
     # ── Chatterbox Multilingual (voice cloning) ─────────────────────────────
     try:
-        from chatterbox import ChatterboxMultilingualTTS  # type: ignore (tts-chatterbox package)
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
 
         logger.info("Loading Chatterbox Multilingual (voice cloning, ~2-3 GB VRAM)…")
         try:
-            chatterbox_model = ChatterboxMultilingualTTS.from_local(device="cuda")
+            chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
             logger.info("✅ Chatterbox Multilingual loaded on CUDA.")
         except Exception as exc:
             logger.warning(f"CUDA unavailable for Chatterbox ({exc}). Falling back to CPU — cloning will be slow.")
-            chatterbox_model = ChatterboxMultilingualTTS.from_local(device="cpu")
+            chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device="cpu")
             logger.info("✅ Chatterbox Multilingual loaded on CPU.")
     except ImportError:
         logger.warning(
@@ -453,15 +453,14 @@ async def _synthesise_chatterbox(
 
         # cfg_weight=0 avoids the cloned voice inheriting an accent from the
         # reference clip's language when target_lang differs from it.
-        sample_rate, audio_array = chatterbox_model.synthesize(
+        wav_tensor = chatterbox_model.generate(
             text,
-            language=target_lang,
-            reference_audio=ref_path,
-            temperature=0.8,
-            cfg_scale=0.3,
+            language_id=target_lang,
+            audio_prompt_path=ref_path,
+            cfg_weight=0.3,
             exaggeration=0.5,
         )
-        return audio_array, sample_rate
+        return wav_tensor, chatterbox_model.sr
 
     try:
         wav_tensor, sample_rate = await loop.run_in_executor(None, _generate)
@@ -469,8 +468,8 @@ async def _synthesise_chatterbox(
         logger.error(f"Chatterbox synthesis error for voice '{voice_id}': {exc}")
         return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
 
-    # tts-chatterbox returns a numpy array directly — no tensor conversion needed
-    audio_array = audio_array
+    # wav_tensor is a torch tensor shaped [1, n_samples], float32 in [-1, 1]
+    audio_array = wav_tensor.squeeze(0).cpu().numpy()
 
     try:
         await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
