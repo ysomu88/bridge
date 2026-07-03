@@ -697,6 +697,40 @@ async def upload_voice_sample(file: UploadFile = File(...)):
     loop = asyncio.get_running_loop()
 
     def _convert_to_wav():
+        # Try PyAV first — FFmpeg-backed, handles WebM/Opus on Windows reliably
+        try:
+            import av
+            import wave as _wave
+            import numpy as _np
+
+            container = av.open(raw_path)
+            frames = []
+            sr = None
+            for frame in container.decode(audio=0):
+                if sr is None:
+                    sr = frame.sample_rate
+                arr = frame.to_ndarray()
+                if arr.ndim == 2:
+                    arr = arr.mean(axis=0)
+                frames.append(arr.astype(_np.float32))
+            container.close()
+
+            if not frames or sr is None:
+                raise ValueError("No audio frames decoded")
+
+            audio = _np.concatenate(frames)
+            # Normalize float32 to int16
+            pcm = (_np.clip(audio, -1.0, 1.0) * 32767).astype(_np.int16)
+
+            with _wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(pcm.tobytes())
+            return
+        except Exception as exc:
+            logger.warning(f"PyAV could not decode voice sample, trying torchaudio: {exc}")
+
         try:
             import torchaudio as ta
             waveform, sr = ta.load(raw_path)

@@ -259,6 +259,20 @@
     }
     .voice-toggle.disabled { opacity: 0.4; cursor: not-allowed; }
 
+    .voice-sample-phrase {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.85rem 1rem;
+      display: flex; flex-direction: column; gap: 0.4rem;
+    }
+    .voice-sample-phrase-label {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--accent-es);
+    }
+    .voice-sample-phrase-text {
+      font-family: var(--font-body); font-style: italic; font-size: 0.86rem;
+      line-height: 1.6; color: var(--text-hi);
+    }
+
     .voice-record-row {
       display: flex; align-items: center; gap: 0.75rem;
     }
@@ -349,6 +363,15 @@
         <input type="checkbox" id="use-cloned-voice" disabled />
         <span id="voice-toggle-label">Use my cloned voice</span>
       </label>
+    </div>
+
+    <div class="voice-sample-phrase">
+      <span class="voice-sample-phrase-label">Try reading this aloud</span>
+      <p class="voice-sample-phrase-text">
+        "The quick brown fox jumps over the lazy dog near the riverbank every morning.
+        I enjoy traveling to new places and learning about different cultures around the world.
+        Yesterday, the weather was sunny and warm, so we decided to go for a long walk in the park."
+      </p>
     </div>
 
     <div class="voice-record-row">
