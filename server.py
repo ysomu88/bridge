@@ -977,8 +977,8 @@ async def ws_stream(websocket: WebSocket):
                 # Trim the consumed audio BEFORE the slow pipeline work so the next
                 # periodic scan only sees the as-yet-unprocessed remainder.
                 state.trim_buffer(consumed_end)
-            except Exception as exc:
-                logger.error(f"[{session_id}] Audio processing error: {exc}", exc_info=True)
+            except Exception:
+                logger.exception(f"[{session_id}] Audio processing error")
                 if consume_all:
                     state.flush_buffer()
                 return
