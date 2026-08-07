@@ -41,3 +41,5 @@ docs/*
 
 # ── Launch scripts (keep start.ps1, ignore personal tunnel script) ─────────
 run_bridge.ps1
+
+overrides.txt

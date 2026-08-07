@@ -48,6 +48,9 @@ packages = ["."]
 
 [tool.uv]
 index-url = "https://pypi.org/simple"
+override-dependencies = [
+    "numpy>=2.0.2,<3",
+]
 
 # ── Notes ──────────────────────────────────────────────────────────────────────
 # After `uv pip install -r requirements.txt`, if CUDA is not detected for Whisper:
