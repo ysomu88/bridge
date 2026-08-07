@@ -52,6 +52,12 @@ override-dependencies = [
     "numpy>=2.0.2,<3",
 ]
 
+[tool.ruff.lint]
+# your existing select/ignore rules if any
+
+[tool.ruff.lint.per-file-ignores]
+"server.py" = ["BLE001", "S110", "B008", "ASYNC230"]
+
 # ── Notes ──────────────────────────────────────────────────────────────────────
 # After `uv pip install -r requirements.txt`, if CUDA is not detected for Whisper:
 #   pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.org/whl/cu121
