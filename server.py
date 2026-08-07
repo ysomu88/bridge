@@ -14,7 +14,7 @@ import sys
 # ctranslate2 gets a chance to load its copy, otherwise the symbol is missing
 # and torchaudio fails with [WinError 127].
 if sys.platform == "win32":
-    import ctypes  # noqa: E402
+    import ctypes
 
     venv_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "Lib", "site-packages")
     torch_lib = os.path.join(venv_base, "torch", "lib")
@@ -48,12 +48,18 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import httpx
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse
 from faster_whisper import WhisperModel
 
@@ -70,7 +76,7 @@ logger = logging.getLogger("bridge")
 # ---------------------------------------------------------------------------
 # Global model references (loaded once at startup via lifespan)
 # ---------------------------------------------------------------------------
-whisper_model: Optional[WhisperModel] = None
+whisper_model: WhisperModel | None = None
 kokoro_pipeline = None
 piper_voices: dict = {}     # lang_code -> PiperVoice instance
 chatterbox_model = None     # ChatterboxMultilingualTTS instance, shared across all cloned-voice sessions
@@ -125,7 +131,6 @@ async def lifespan(app: FastAPI):
     # ── Piper TTS (Korean, German) ────────────────────────────────────────
     try:
         from piper import PiperVoice  # type: ignore
-        import wave
 
         PIPER_VOICE_FILES = {
             "ko": ("piper_voices/piper-kss-korean.onnx", "piper_voices/piper-kss-korean.onnx.json"),
@@ -267,15 +272,15 @@ class SessionState:
 
     CHUNK_SR: int = 16_000
 
-    def __init__(self, session_id: str, source_lang: str = "en", target_lang: str = "es", voice_id: Optional[str] = None):
+    def __init__(self, session_id: str, source_lang: str = "en", target_lang: str = "es", voice_id: str | None = None):
         self.session_id = session_id
         self.source_lang = source_lang
         self.target_lang = target_lang
         self.voice_id = voice_id  # cloned voice profile id, or None for preset voices
         self.audio_buffer = io.BytesIO()
         self.has_voice: bool = False
-        self.speech_start: Optional[float] = None
-        self.silence_start: Optional[float] = None
+        self.speech_start: float | None = None
+        self.silence_start: float | None = None
 
     def append_chunk(self, data: bytes) -> None:
         self.audio_buffer.write(data)
@@ -310,7 +315,7 @@ class SessionState:
 # ---------------------------------------------------------------------------
 # Audio helpers
 # ---------------------------------------------------------------------------
-def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional[np.ndarray]:
+def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> np.ndarray | None:
     """
     Directly converts raw incoming PCM Float32 bytes from the browser 
     into a NumPy array, completely bypassing container parsers.
@@ -660,7 +665,7 @@ async def synthesise_and_stream(
     original_text: str,
     source_lang: str,
     target_lang: str,
-    session_voice_id: Optional[str] = None,
+    session_voice_id: str | None = None,
 ) -> None:
     """Synthesise target text and stream PCM bytes back to client with layout routing indicators."""
     if not translated_text:
@@ -725,7 +730,7 @@ async def synthesise_and_stream(
 
     def _generate_chunks():
         try:
-            samples, sample_rate = kokoro_pipeline.create(
+            samples, _sample_rate = kokoro_pipeline.create(
                 translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
             )
             chunk_size = 2400
@@ -805,8 +810,9 @@ async def upload_voice_sample(file: UploadFile = File(...)):
         # recognised" — PyAV bundles its own FFmpeg bindings and doesn't have
         # that detection problem.
         try:
-            import av
             import wave as _wave
+
+            import av
             import numpy as _np
 
             container = av.open(raw_path)
@@ -1018,11 +1024,11 @@ async def ws_stream(websocket: WebSocket):
                 raise WebSocketDisconnect(code=message.get("code", 1000))
 
             # ── Binary audio chunk ─────────────────────────────────────
-            if "bytes" in message and message["bytes"]:
+            if message.get("bytes"):
                 state.append_chunk(message["bytes"])
 
             # ── VAD energy report from browser ─────────────────────────
-            elif "text" in message and message["text"]:
+            elif message.get("text"):
                 try:
                     msg = json.loads(message["text"])
                 except json.JSONDecodeError:
@@ -1074,7 +1080,7 @@ async def ws_stream(websocket: WebSocket):
 
     except (WebSocketDisconnect, RuntimeError) as exc:
         if isinstance(exc, RuntimeError) and "disconnect" not in str(exc).lower():
-            logger.error(f"[{session_id}] Unexpected error: {exc}", exc_info=True)
+            logger.exception(f"[{session_id}] Unexpected error")
         else:
             logger.info(f"[{session_id}] Client disconnected.")
         sweeper_task.cancel()
@@ -1083,8 +1089,8 @@ async def ws_stream(websocket: WebSocket):
             asyncio.create_task(process_audio(consume_all=True))
         else:
             state.flush_buffer()
-    except Exception as exc:
-        logger.error(f"[{session_id}] Unexpected error: {exc}", exc_info=True)
+    except Exception:
+        logger.exception(f"[{session_id}] Unexpected error")
         state.flush_buffer()
     finally:
         sweeper_task.cancel()

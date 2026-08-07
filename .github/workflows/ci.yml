@@ -37,7 +37,7 @@ jobs:
       run: |
         uv venv .venv --python 3.12 --clear
         source .venv/bin/activate
-        uv pip install -r requirements.txt
+        uv pip install -r requirements.txt --override overrides.txt
     
     - name: Verify installation
       run: |
