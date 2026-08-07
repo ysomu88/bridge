@@ -499,7 +499,7 @@
     let playbackCtx    = null;
     let nextPlayTime   = 0;
     const SAMPLE_RATE  = 24000;  // Kokoro default
-    let activeSampleRate = SAMPLE_RATE;  // may be updated by tts_config for Piper
+    let currentSampleRate = SAMPLE_RATE;  // updated by tts_config when Piper/Chatterbox sends a different rate
 
     let silenceThresholdDb = parseFloat(thresholdSlider.value);
 
@@ -707,7 +707,7 @@
     // ── Web Audio playback ────────────────────────────────────────────
     function ensurePlaybackCtx() {
       if (!playbackCtx || playbackCtx.state === "closed") {
-        playbackCtx  = new AudioContext({ sampleRate: SAMPLE_RATE });
+        playbackCtx  = new AudioContext({ sampleRate: currentSampleRate });
         nextPlayTime = 0;
       }
     }
@@ -718,7 +718,10 @@
       const float32  = new Float32Array(int16Arr.length);
       for (let i = 0; i < int16Arr.length; i++) float32[i] = int16Arr[i] / 32768.0;
 
-      const buffer = playbackCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+      // Create the buffer at the AudioContext's ACTUAL sample rate — Piper
+      // outputs at 22050 Hz and Chatterbox varies, so hardcoding SAMPLE_RATE
+      // here caused pitch/speed distortion after a tts_config rate change.
+      const buffer = playbackCtx.createBuffer(1, float32.length, playbackCtx.sampleRate);
       buffer.copyToChannel(float32, 0);
 
       const source = playbackCtx.createBufferSource();
@@ -750,13 +753,14 @@
             if (msg.type === "subtitle") {
               updateSubtitles(msg.src, msg.tgt);
             } else if (msg.type === "tts_config") {
-              // Piper outputs at 22050 Hz vs Kokoro's 24000 Hz — recreate context
-              if (msg.sample_rate && msg.sample_rate !== SAMPLE_RATE) {
-                activeSampleRate = msg.sample_rate;
+              // Piper outputs at 22050 Hz, Chatterbox varies, Kokoro is 24000 —
+              // recreate the context whenever the engine reports a new rate.
+              if (msg.sample_rate && msg.sample_rate !== currentSampleRate) {
+                currentSampleRate = msg.sample_rate;
                 if (playbackCtx && playbackCtx.state !== "closed") {
                   playbackCtx.close();
                 }
-                playbackCtx  = new AudioContext({ sampleRate: activeSampleRate });
+                playbackCtx = new AudioContext({ sampleRate: currentSampleRate });
                 nextPlayTime = 0;
               }
             }

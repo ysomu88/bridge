@@ -75,6 +75,8 @@ kokoro_pipeline = None
 piper_voices: dict = {}     # lang_code -> PiperVoice instance
 chatterbox_model = None     # ChatterboxMultilingualTTS instance, shared across all cloned-voice sessions
 voice_profiles: dict = {}   # voice_id -> absolute path to the user's reference WAV clip
+voice_conditionals: dict = {}  # voice_id -> cached Conditionals object (avoids re-embedding on every request)
+cuda_lock = asyncio.Lock()  # serializes ALL GPU work (Whisper + Chatterbox) — see note in transcribe() and _synthesise_chatterbox()
 
 VOICE_SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "voice_samples")
 CHATTERBOX_LANGUAGES = {
@@ -166,6 +168,37 @@ async def lifespan(app: FastAPI):
         logger.error(f"Chatterbox init failed: {exc}")
         chatterbox_model = None
 
+    # ── Instrument s3gen (vocoder) and watermarker with timing ──────────────
+    # generate() showed a large, unexplained gap between "EOS token detected"
+    # (T3 sampling finishes) and the function actually returning. That gap is
+    # the s3gen.inference() (mel→waveform) and watermarker.apply_watermark()
+    # calls, which aren't logged internally. Wrapping them here gives us hard
+    # numbers without editing site-packages files directly (survives reinstalls).
+    if chatterbox_model is not None:
+        try:
+            _orig_s3gen_inference = chatterbox_model.s3gen.inference
+
+            def _timed_s3gen_inference(*args, **kwargs):
+                t0 = time.monotonic()
+                result = _orig_s3gen_inference(*args, **kwargs)
+                logger.info(f"[chatterbox] s3gen.inference (vocoder): {time.monotonic() - t0:.1f}s")
+                return result
+
+            chatterbox_model.s3gen.inference = _timed_s3gen_inference
+
+            _orig_apply_watermark = chatterbox_model.watermarker.apply_watermark
+
+            def _timed_apply_watermark(*args, **kwargs):
+                t0 = time.monotonic()
+                result = _orig_apply_watermark(*args, **kwargs)
+                logger.info(f"[chatterbox] watermarker.apply_watermark: {time.monotonic() - t0:.1f}s")
+                return result
+
+            chatterbox_model.watermarker.apply_watermark = _timed_apply_watermark
+            logger.info("✅ Chatterbox instrumented with vocoder/watermark timing.")
+        except Exception as exc:
+            logger.warning(f"Could not instrument Chatterbox timing (non-fatal): {exc}")
+
     os.makedirs(VOICE_SAMPLES_DIR, exist_ok=True)
 
     # ── Ollama connectivity check ───────────────────────────────────────────
@@ -191,6 +224,7 @@ async def lifespan(app: FastAPI):
     piper_voices.clear()
     chatterbox_model = None
     voice_profiles.clear()
+    voice_conditionals.clear()
 
     # Privacy: delete all voice sample files from disk on shutdown.
     # Users' recorded voice clips should never persist beyond a single session.
@@ -304,7 +338,13 @@ async def transcribe(audio: np.ndarray, source_lang: str) -> str:
         )
         return " ".join(seg.text.strip() for seg in segments).strip()
 
-    text = await loop.run_in_executor(None, _run)
+    # Whisper and Chatterbox share one GPU. Running them concurrently causes
+    # real contention — observed empty/corrupted transcripts and a 31s+ vocoder
+    # stall in Chatterbox when both fired at once. Serializing via cuda_lock
+    # trades some throughput for correctness: nothing else touches the GPU
+    # while either model is actively running.
+    async with cuda_lock:
+        text = await loop.run_in_executor(None, _run)
     # logger.info(f"📝 Transcript ({source_lang}): {text!r}")
     return text
 
@@ -462,31 +502,51 @@ async def _synthesise_chatterbox(
         return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
 
     def _generate():
-        import torchaudio as ta  # local import — heavy, only needed here
+        # Compute the voice embedding once per voice_id and cache it. Chatterbox's
+        # generate() re-runs prepare_conditionals() (librosa load, resample, speaker
+        # embedding, tokenization) on EVERY call when audio_prompt_path is passed —
+        # this was costing 6-9 seconds per translation. Caching the resulting
+        # Conditionals object and swapping model.conds directly skips that entirely
+        # on repeat requests for the same voice.
+        cached = voice_conditionals.get(voice_id)
+        if cached is None:
+            logger.info(f"[{voice_id}] Conditionals cache MISS — computing embedding...")
+            embed_start = time.monotonic()
+            chatterbox_model.prepare_conditionals(ref_path, exaggeration=0.5)
+            voice_conditionals[voice_id] = chatterbox_model.conds
+            logger.info(f"[{voice_id}] Embedding computed in {time.monotonic() - embed_start:.1f}s")
+        else:
+            logger.info(f"[{voice_id}] Conditionals cache HIT — skipping embedding.")
+            chatterbox_model.conds = cached
 
-        # cfg_weight=0 avoids the cloned voice inheriting an accent from the
-        # reference clip's language when target_lang differs from it.
+        gen_start = time.monotonic()
         wav_tensor = chatterbox_model.generate(
             text,
             language_id=target_lang,
-            audio_prompt_path=ref_path,
+            audio_prompt_path=None,  # conds already set above — skips re-embedding
             cfg_weight=0.3,
             exaggeration=0.5,
         )
+        logger.info(f"[{voice_id}] Generation finished in {time.monotonic() - gen_start:.1f}s")
         return wav_tensor, chatterbox_model.sr
 
+    pipeline_start = time.monotonic()
     try:
-        wav_tensor, sample_rate = await loop.run_in_executor(None, _generate)
+        async with cuda_lock:
+            wav_tensor, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Chatterbox synthesis error for voice '{voice_id}': {exc}")
         return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    logger.info(f"[{voice_id}] Total synthesis (lock + generate): {time.monotonic() - pipeline_start:.1f}s")
 
     # wav_tensor is a torch tensor shaped [1, n_samples], float32 in [-1, 1]
     audio_array = wav_tensor.squeeze(0).cpu().numpy()
 
     try:
         await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
-    except Exception:
+    except Exception as exc:
+        logger.warning(f"[{voice_id}] Client disconnected before audio could be sent: {exc}")
         return
 
     pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
@@ -697,7 +757,11 @@ async def upload_voice_sample(file: UploadFile = File(...)):
     loop = asyncio.get_running_loop()
 
     def _convert_to_wav():
-        # Try PyAV first — FFmpeg-backed, handles WebM/Opus on Windows reliably
+        # Try PyAV first — FFmpeg-backed, handles WebM/Opus on Windows reliably.
+        # torchaudio's own ffmpeg backend detection is unreliable on Windows even
+        # with ffmpeg on PATH, which is why it keeps failing with "Format not
+        # recognised" — PyAV bundles its own FFmpeg bindings and doesn't have
+        # that detection problem.
         try:
             import av
             import wave as _wave
@@ -719,7 +783,6 @@ async def upload_voice_sample(file: UploadFile = File(...)):
                 raise ValueError("No audio frames decoded")
 
             audio = _np.concatenate(frames)
-            # Normalize float32 to int16
             pcm = (_np.clip(audio, -1.0, 1.0) * 32767).astype(_np.int16)
 
             with _wave.open(wav_path, "wb") as wf:
@@ -767,8 +830,9 @@ async def upload_voice_sample(file: UploadFile = File(...)):
 
 @app.delete("/api/voice/{voice_id}")
 async def delete_voice_sample(voice_id: str):
-    """Remove a voice profile and its underlying audio file."""
+    """Remove a voice profile, its underlying audio file, and any cached conditionals."""
     path = voice_profiles.pop(voice_id, None)
+    voice_conditionals.pop(voice_id, None)
     if path and os.path.exists(path):
         try:
             os.remove(path)

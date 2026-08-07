@@ -155,7 +155,6 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 | `start.ps1` | One-click local launch script |
 | `requirements.txt` | Python dependencies |
 | `DOCUMENTATION.md` | Full architecture and technical reference |
-| `TECHNICAL_WALKTHROUGH.md` | Step-by-step explanation of how it works |
 | `voice_samples/` | Locally recorded voice cloning reference clips (gitignored) |
 
 ---
