@@ -1051,7 +1051,11 @@ async def ws_stream(websocket: WebSocket):
                                     "type": "processing",
                                     "queued": utterance_queue.qsize(),
                                 }))
-                            except Exception:
+                            except Exception as exc:
+                                # Client likely went away mid-send; a following
+                                # client_gone() check or the disconnect handler
+                                # will clean up.
+                                logger.debug(f"[{session_id}] Could not send processing notice: {exc}")
                                 continue
                             # Snapshot the buffer's absolute end offset NOW, at
                             # trigger time, so the worker only consumes audio up to
