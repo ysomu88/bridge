@@ -80,17 +80,17 @@ Recorded voice samples are stored locally in `voice_samples/` and never leave yo
 > The sample is used **only for that session** and is deleted when the server shuts down, so you'll re-record each time you connect.
 
 ### 3. Start listening
-- Click **▶ Start Listening** and allow microphone access when prompted.
+- Click **▶ Start Listening** — that's the only setup you need. Grant mic access when prompted.
 - The status should show **Listening…**.
 
-### 4. Speak
-- Speak a sentence in your source language.
-- The status changes to **Processing…** — this is normal; the pipeline takes several seconds.
+### 4. Just speak
+- Bridge listens continuously. As soon as you **pause after a sentence**, it automatically starts translating — **no buttons to press between sentences**.
+- The status changes to **Processing…** while it works.
 - The transcription appears on the left, the translation on the right.
 - You'll hear the translation played back in **your cloned voice**.
 
-### 5. Stop when done
-- Click **⏹ Stop** to end the session.
+### 5. Stop when you're finished
+- Click **⏹ Stop** only when you're done.
 
 ### ⏳ About playback delay
 There is an expected **5–20 second delay** between speaking and hearing playback. This is the transcription + translation + voice-cloning pipeline doing its work — **not a bug**. Over a remote connection, latency can make this feel longer. Watch for the **Processing…** status to confirm work is happening.
