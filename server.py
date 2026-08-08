@@ -256,6 +256,13 @@ VAD_SILENCE_DB: float = -40.0       # dBFS below which we call it silence
 VAD_SILENCE_DURATION_S: float = 0.3 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
 
+# ── Incremental (sentence-level) processing ───────────────────────────────────
+# Instead of waiting for the user to finish the ENTIRE utterance before
+# translating/cloning, a periodic sweeper detects complete sentences in the
+# accumulated audio and processes each one as it's spoken.
+SENTENCE_CHECK_INTERVAL_S: float = 1.5  # seconds between sentence scans
+SENTENCE_TERMINATORS = ".!?。！？…"
+
 
 # ---------------------------------------------------------------------------
 # Per-session state
@@ -292,6 +299,18 @@ class SessionState:
             return 0.0
         return time.monotonic() - self.speech_start
 
+    def trim_buffer(self, consumed_samples: int) -> None:
+        """Remove `consumed_samples` float32 samples from the front of the buffer.
+
+        Used by the incremental sentence sweeper to discard audio that has already
+        been translated/cloned while keeping the un-finished tail for the next scan.
+        """
+        if consumed_samples <= 0:
+            return
+        consumed_bytes = consumed_samples * 4  # float32 = 4 bytes/sample
+        remaining = self.audio_buffer.getvalue()[consumed_bytes:]
+        self.audio_buffer = io.BytesIO(remaining)
+
 
 # ---------------------------------------------------------------------------
 # Audio helpers
@@ -323,25 +342,42 @@ def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> np.ndarr
 # ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
-async def transcribe(audio: np.ndarray, source_lang: str) -> str:
-    """Run faster-whisper in a thread pool configured with session language parameters."""
+def _whisper_segments(
+    audio: np.ndarray,
+    source_lang: str,
+    beam_size: int = 5,
+) -> list:
+    """Run faster-whisper synchronously and return (text, end_sample) tuples.
+
+    end_sample is the absolute end of the segment in 16 kHz samples, which lets
+    the sentence sweeper trim audio that has already been fully transcribed.
+    """
+    segments, _ = whisper_model.transcribe(
+        audio,
+        language=source_lang,
+        beam_size=beam_size,
+        vad_filter=True,
+        vad_parameters={
+            "min_silence_duration_ms": 500,
+            "threshold": 0.5,
+        },
+    )
+    return [
+        (seg.text.strip(), int(seg.end * SessionState.CHUNK_SR))
+        for seg in segments
+        if seg.text.strip()
+    ]
+
+
+async def transcribe_segments(
+    audio: np.ndarray,
+    source_lang: str,
+    beam_size: int = 5,
+) -> list:
+    """Async wrapper around _whisper_segments, serialized on the shared GPU lock."""
     if whisper_model is None:
-        return ""
-
+        return []
     loop = asyncio.get_running_loop()
-
-    def _run() -> str:
-        segments, _ = whisper_model.transcribe(
-            audio,
-            language=source_lang,
-            beam_size=5,
-            vad_filter=True,
-            vad_parameters={
-                "min_silence_duration_ms": 500,
-                "threshold": 0.5,
-            },
-        )
-        return " ".join(seg.text.strip() for seg in segments).strip()
 
     # Whisper and Chatterbox share one GPU. Running them concurrently causes
     # real contention — observed empty/corrupted transcripts and a 31s+ vocoder
@@ -349,7 +385,13 @@ async def transcribe(audio: np.ndarray, source_lang: str) -> str:
     # trades some throughput for correctness: nothing else touches the GPU
     # while either model is actively running.
     async with cuda_lock:
-        text = await loop.run_in_executor(None, _run)
+        return await loop.run_in_executor(None, _whisper_segments, audio, source_lang, beam_size)
+
+
+async def transcribe(audio: np.ndarray, source_lang: str) -> str:
+    """Run faster-whisper in a thread pool configured with session language parameters."""
+    items = await transcribe_segments(audio, source_lang)
+    text = " ".join(text for text, _ in items).strip()
     # logger.info(f"📝 Transcript ({source_lang}): {text!r}")
     return text
 
@@ -877,30 +919,71 @@ async def ws_stream(websocket: WebSocket):
 
     processing_lock = asyncio.Lock()
 
-    async def process_utterance():
-        if processing_lock.locked():
-            logger.debug(f"[{session_id}] Pipeline busy — skipping duplicate trigger.")
-            return
+    async def process_audio(consume_all: bool) -> None:
+        """Process buffered audio through the whole pipeline.
+
+        consume_all=True  → process the ENTIRE buffer (user stopped talking).
+        consume_all=False → only consume completed sentences (periodic scan while
+                            the user is still speaking); the unfinished tail stays
+                            in the buffer for the next scan.
+
+        The slow Ollama translation + TTS synthesis run OUTSIDE processing_lock so
+        new audio keeps accumulating while we're busy — no speech is ever dropped.
+        """
         async with processing_lock:
-            raw = state.get_buffer_bytes()
-            state.flush_buffer()
+            try:
+                raw = state.get_buffer_bytes()
+                if not raw:
+                    return
 
-        if not raw:
-            return
+                loop = asyncio.get_running_loop()
+                logger.info(f"[{session_id}] 🔄 Decoding {len(raw)} bytes of audio...")
+                audio = await loop.run_in_executor(None, webm_bytes_to_float32, raw)
+                if audio is None:
+                    if consume_all:
+                        state.flush_buffer()
+                    return
 
-        loop = asyncio.get_running_loop()
-        logger.info(f"[{session_id}] 🔄 Decoding {len(raw)} bytes of audio...")
-        audio = await loop.run_in_executor(None, webm_bytes_to_float32, raw)
-        if audio is None:
-            logger.warning(f"[{session_id}] ⚠️  Audio decode returned None — buffer too short or corrupt. ({len(raw)} bytes)")
-            return
+                logger.info(
+                    f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio via "
+                    f"'{state.source_lang}' stream config..."
+                )
+                items = await transcribe_segments(audio, state.source_lang)
 
-        logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio via '{state.source_lang}' stream config...")
-        original_text = await transcribe(audio, state.source_lang)
-        if not original_text:
-            logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript.")
-            return
+                if consume_all:
+                    consumed_end = len(audio)
+                    texts = [text for text, _ in items]
+                else:
+                    # Consume only up to the last segment that ends with a
+                    # sentence terminator (., !, ?, etc). Segments that don't end
+                    # cleanly are left in the buffer for the next scan.
+                    consumed_end = 0
+                    texts = [
+                        text for text, end_sample in items
+                        if text[-1] in SENTENCE_TERMINATORS
+                    ]
+                    for text, end_sample in items:
+                        if text[-1] in SENTENCE_TERMINATORS:
+                            consumed_end = end_sample
+                    if not texts:
+                        return
 
+                original_text = " ".join(texts).strip()
+                if not original_text:
+                    if consume_all:
+                        state.flush_buffer()
+                    return
+
+                # Trim the consumed audio BEFORE the slow pipeline work so the next
+                # periodic scan only sees the as-yet-unprocessed remainder.
+                state.trim_buffer(consumed_end)
+            except Exception:
+                logger.exception(f"[{session_id}] Audio processing error")
+                if consume_all:
+                    state.flush_buffer()
+                return
+
+        # ── Slow work, outside the lock ──────────────────────────────────
         logger.info(f"[{session_id}] 🔄 Translating now")
         translated_text = await translate_text(original_text, state.source_lang, state.target_lang)
         if not translated_text:
@@ -911,7 +994,27 @@ async def ws_stream(websocket: WebSocket):
             translated_text, websocket, original_text, state.source_lang, state.target_lang, state.voice_id
         )
 
+    async def sentence_sweeper() -> None:
+        """Periodically scan the buffer for completed sentences and process them.
+
+        While the user is actively speaking we only consume completed sentences so
+        translation/cloning starts early instead of waiting for the whole utterance.
+        When the user has stopped talking but audio is still buffered (e.g. a flush
+        was skipped because the pipeline was busy), we consume everything.
+        """
+        while True:
+            await asyncio.sleep(SENTENCE_CHECK_INTERVAL_S)
+            try:
+                if not state.get_buffer_bytes():
+                    continue
+                consume_all = not state.has_voice
+                asyncio.create_task(process_audio(consume_all))
+            except Exception as exc:
+                logger.error(f"[{session_id}] Sentence sweeper error: {exc}")
+
     vad_silence_db: float = VAD_SILENCE_DB
+
+    sweeper_task = asyncio.create_task(sentence_sweeper())
 
     try:
         while True:
@@ -973,22 +1076,24 @@ async def ws_stream(websocket: WebSocket):
                             )
                             state.has_voice = False
                             state.silence_start = None
-                            asyncio.create_task(process_utterance())
+                            asyncio.create_task(process_audio(consume_all=True))
 
     except (WebSocketDisconnect, RuntimeError) as exc:
         if isinstance(exc, RuntimeError) and "disconnect" not in str(exc).lower():
             logger.exception(f"[{session_id}] Unexpected error")
         else:
             logger.info(f"[{session_id}] Client disconnected.")
-        if state.has_voice and len(state.get_buffer_bytes()) > 0:
+        sweeper_task.cancel()
+        if len(state.get_buffer_bytes()) > 0:
             logger.info(f"[{session_id}] Processing final utterance on disconnect.")
-            asyncio.create_task(process_utterance())
+            asyncio.create_task(process_audio(consume_all=True))
         else:
             state.flush_buffer()
     except Exception:
         logger.exception(f"[{session_id}] Unexpected error")
         state.flush_buffer()
     finally:
+        sweeper_task.cancel()
         logger.info(f"[{session_id}] Session closed.")
 
 
