@@ -589,19 +589,22 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
     }
     kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
 
-    def _generate_chunks():
-        try:
-            samples, _ = kokoro_pipeline.create(text, voice=voice_code, speed=1.0, lang=kokoro_lang)
-            chunk_size = 2400
-            for i in range(0, len(samples), chunk_size):
-                yield samples[i : i + chunk_size]
-        except Exception as exc:
-            logger.error(f"Kokoro fallback synthesis error: {exc}")
+    def _generate():
+        samples, sample_rate = kokoro_pipeline.create(text, voice=voice_code, speed=1.0, lang=kokoro_lang)
+        chunk_size = 2400
+        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
+        return chunks, sample_rate
 
     try:
-        chunks = await loop.run_in_executor(None, lambda: list(_generate_chunks()))
+        chunks, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Kokoro fallback executor error: {exc}")
+        return
+
+    # Send the actual sample rate so the client can adapt (same as the main Kokoro path).
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception:
         return
 
     for audio_array in chunks:
@@ -686,21 +689,26 @@ async def synthesise_and_stream(
 
     kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
 
-    def _generate_chunks():
-        try:
-            samples, _sample_rate = kokoro_pipeline.create(
-                translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
-            )
-            chunk_size = 2400
-            for i in range(0, len(samples), chunk_size):
-                yield samples[i : i + chunk_size]
-        except Exception as exc:
-            logger.error(f"Kokoro voice synthesis error: {exc}")
+    def _generate():
+        samples, sample_rate = kokoro_pipeline.create(
+            translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
+        )
+        chunk_size = 2400
+        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
+        return chunks, sample_rate
 
     try:
-        chunks = await loop.run_in_executor(None, lambda: list(_generate_chunks()))
+        chunks, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Kokoro executor error: {exc}")
+        return
+
+    # Send the actual sample rate so the client can adapt — same as Piper/Chatterbox.
+    # Without this, a session that previously used Piper (22050 Hz) or Chatterbox
+    # would play Kokoro's 24000 Hz audio at the wrong rate (pitch/speed distortion).
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception:
         return
 
     for audio_array in chunks:
@@ -877,13 +885,25 @@ async def ws_stream(websocket: WebSocket):
 
     processing_lock = asyncio.Lock()
 
-    async def process_utterance():
+    async def process_utterance(byte_len: int | None = None):
         if processing_lock.locked():
             logger.debug(f"[{session_id}] Pipeline busy — skipping duplicate trigger.")
             return
         async with processing_lock:
-            raw = state.get_buffer_bytes()
-            state.flush_buffer()
+            if byte_len is None:
+                # No snapshot — process everything (e.g. final flush on disconnect)
+                raw = state.get_buffer_bytes()
+                state.flush_buffer()
+            else:
+                # Snapshot taken at silence-trigger time. Only consume that many
+                # bytes — anything appended after the trigger belongs to the next
+                # utterance. Don't touch has_voice/silence_start, which may already
+                # reflect new speech that started while we were scheduled.
+                state.audio_buffer.seek(0)
+                raw = state.audio_buffer.read(byte_len)
+                remaining = state.audio_buffer.read()
+                state.audio_buffer = io.BytesIO(remaining)
+                state.audio_buffer.seek(0, io.SEEK_END)
 
         if not raw:
             return
@@ -973,7 +993,12 @@ async def ws_stream(websocket: WebSocket):
                             )
                             state.has_voice = False
                             state.silence_start = None
-                            asyncio.create_task(process_utterance())
+                            # Snapshot the buffer length NOW, at trigger time, so
+                            # process_utterance only consumes audio up to this point.
+                            # Audio appended after this (start of next utterance) stays
+                            # in the buffer for the next VAD cycle.
+                            trigger_len = state.audio_buffer.tell()
+                            asyncio.create_task(process_utterance(trigger_len))
 
     except (WebSocketDisconnect, RuntimeError) as exc:
         if isinstance(exc, RuntimeError) and "disconnect" not in str(exc).lower():
