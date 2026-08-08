@@ -3,6 +3,11 @@
 #
 # Install with:
 #   uv pip install -r requirements.txt
+#
+# IMPORTANT: This project uses `uv`, not plain pip. The venv has no `pip`
+# installed inside it at all — always use `uv pip install ...`, never a
+# bare `pip install`, or you risk writing packages to the wrong Python
+# environment entirely.
 
 # ── Web framework ─────────────────────────────────────────────────────────────
 fastapi>=0.111.0
@@ -11,7 +16,10 @@ websockets>=12.0
 httpx>=0.27.0          # Async Ollama REST calls
 
 # ── Audio & data ──────────────────────────────────────────────────────────────
-numpy>=1.26.0
+# Upper-bounded below 2.5: numba (a chatterbox-tts transitive dependency via
+# librosa) does not yet support numpy 2.5+ and will fail to import with
+# "Numba needs NumPy 2.4 or less" if numpy resolves higher.
+numpy>=1.26.0,<2.5
 soundfile>=0.12.1   # fallback decoder for voice sample uploads if torchaudio's ffmpeg backend fails
 python-multipart>=0.0.32   # required by FastAPI UploadFile for POST /api/voice/upload
 
@@ -31,31 +39,47 @@ kokoro-onnx>=0.5.0     # 82M-param ONNX TTS; covers EN, ES, FR, IT, JA, ZH, HI, 
 # into the piper_voices/ directory — see DOCUMENTATION.md for instructions.
 piper-tts
 
+# ── PyTorch (CUDA build) ───────────────────────────────────────────────────────
+# torch/torchvision/torchaudio MUST come from the same CUDA-matched index,
+# installed together, or you can silently end up with a CPU-only build (no
+# "+cuXXX" suffix) or mismatched versions that break torchvision's internal
+# registrations and cascade into transformers/chatterbox import errors.
+# Check `nvidia-smi` for your driver's max supported CUDA version first, then
+# install explicitly, e.g. for CUDA 12.4+ drivers:
+#
+#   uv pip install --reinstall torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+#
+# Verify afterward:
+#   python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.cuda.is_available())"
+# All three should show a matching "+cu124" (or your chosen CUDA) suffix,
+# and cuda.is_available() should be True.
+
 # ── Voice cloning (Chatterbox Multilingual) ───────────────────────────────
 # Clones a user's voice from a short reference clip and uses it for TTS
-# playback. ~2-3 GB VRAM. Requires PyTorch with CUDA — installed automatically
-# as a transitive dependency, but verify your torch build matches your CUDA
-# version if you hit "CUDA not available" at startup.
-# Install chatterbox-tts and its missing deps manually due to incomplete dependency
-# declarations in the package. Run in this order:
+# playback. ~2-3 GB VRAM. Requires PyTorch with CUDA (see above).
+#
+# Install chatterbox-tts and its missing deps manually due to incomplete
+# dependency declarations in the package. Run in this order:
 #
 #   uv pip install "chatterbox-tts>=0.1.4" --no-deps
-#   uv pip install "llvmlite>=0.43.0" "numba>=0.60.0" "librosa>=0.10.0" "perth" --no-deps
+#   uv pip install "llvmlite>=0.43.0" "numba>=0.60.0" "librosa>=0.10.0" "resemble-perth" --no-deps
 #   uv pip install conformer diffusers einops rotary-embedding-torch encodec vector-quantize-pytorch
 #
 # Then run: uv pip install -r requirements.txt
-
-# ── chatterbox-tts install note ───────────────────────────────────────────────
-# After installing, patch perth API name change (perth==1.0.0 renamed
-# PerthImplicitWatermarker to Perth). Run these four commands:
 #
-#   (Get-Content ".venv\Lib\site-packages\chatterbox\mtl_tts.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\mtl_tts.py"
-#   (Get-Content ".venv\Lib\site-packages\chatterbox\tts.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\tts.py"
-#   (Get-Content ".venv\Lib\site-packages\chatterbox\tts_turbo.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\tts_turbo.py"
-#   (Get-Content ".venv\Lib\site-packages\chatterbox\vc.py") -replace "PerthImplicitWatermarker","Perth" | Set-Content ".venv\Lib\site-packages\chatterbox\vc.py"
+# NOTE: The dependency is "resemble-perth" (NOT a bare package named
+# "perth" — that is a different, unverified package under a similar name
+# that does not provide a compatible PerthImplicitWatermarker class and
+# will break voice-cloning watermarking with:
+#   'Perth' object has no attribute 'apply_watermark'
+# resemble-perth installs into an importable module also literally named
+# `perth`, so `import perth` in chatterbox's source code is correct as-is —
+# do not install anything named bare "perth" alongside it, and do not patch
+# chatterbox's source to reference a class called "Perth". No source patch
+# is needed when resemble-perth is installed correctly.
 chatterbox-tts>=0.1.4
 
-perth
+resemble-perth
 conformer
 diffusers
 einops
