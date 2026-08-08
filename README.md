@@ -66,6 +66,42 @@ Recorded voice samples are stored locally in `voice_samples/` and never leave yo
 
 ---
 
+## 🧭 How to Use (for new users)
+
+### 1. Set up your language pair
+- The **From** dropdown is the language you'll speak; the **To** dropdown is the language you'll hear back.
+- Use the **⇌** button to swap them instantly.
+
+### 2. Record your voice sample (for cloned voice)
+- Read the sample phrase aloud **naturally, in a quiet room, for at least 10 seconds** (the button auto-stops at 15s).
+- Wait for the status to show **Voice ready ✓**.
+- Make sure **Use my cloned voice** is checked — it auto-checks after recording.
+
+> The sample is used **only for that session** and is deleted when the server shuts down, so you'll re-record each time you connect.
+
+### 3. Start listening
+- Click **▶ Start Listening** and allow microphone access when prompted.
+- The status should show **Listening…**.
+
+### 4. Speak
+- Speak a sentence in your source language.
+- The status changes to **Processing…** — this is normal; the pipeline takes several seconds.
+- The transcription appears on the left, the translation on the right.
+- You'll hear the translation played back in **your cloned voice**.
+
+### 5. Stop when done
+- Click **⏹ Stop** to end the session.
+
+### ⏳ About playback delay
+There is an expected **5–20 second delay** between speaking and hearing playback. This is the transcription + translation + voice-cloning pipeline doing its work — **not a bug**. Over a remote connection, latency can make this feel longer. Watch for the **Processing…** status to confirm work is happening.
+
+### ❓ Quick tips
+- If the mic level bar isn't moving, check browser mic permission and that the correct mic is selected.
+- If speech isn't detected, lower the **silence threshold** slider (more negative, e.g. toward -50 dBFS).
+- If you don't hear playback, raise your volume and make sure the tab isn't muted.
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
