@@ -779,6 +779,24 @@
 
     // ── Audio Processing & Pipeline ───────────────────────────────────
     async function startCapture() {
+      // Create the AudioContext FIRST, while we still have the user-gesture
+      // context from the button click. Creating it after an `await` (e.g.
+      // getUserMedia) loses that context, and Chrome's autoplay policy then
+      // starts the context in a "suspended" state — onaudioprocess never
+      // fires, so no audio chunks are ever sent.
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        if (audioCtx.state === "suspended") {
+          await audioCtx.resume();
+        }
+        console.log("[AUDIO] AudioContext state:", audioCtx.state);
+      } catch (err) {
+        console.error("[AUDIO] AudioContext init failed:", err);
+        setStatus("error");
+        statusLabel.textContent = "Audio error — check browser settings";
+        return;
+      }
+
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -800,8 +818,6 @@
       setSelectorsDisabled(true);
       connectWebSocket();
 
-      // Setup audio context at native downstream target sample rate (16kHz)
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       micSource = audioCtx.createMediaStreamSource(micStream);
       
       // Create processor node (using 4096 buffer size window)
@@ -811,6 +827,11 @@
 
       scriptNode.onaudioprocess = (audioProcessingEvent) => {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        // Safety net: if the context got suspended (e.g. tab switch), resume it
+        if (audioCtx && audioCtx.state === "suspended") {
+          audioCtx.resume().catch(() => {});
+        }
 
         const inputBuffer = audioProcessingEvent.inputBuffer;
         const inputData = inputBuffer.getChannelData(0); // Float32Array Mono
@@ -838,10 +859,17 @@
         if (!speaking && isSpeaking) { isSpeaking = false; setStatus("listening"); }
 
         // 3. Pipe down the pipeline wire: Send raw binary Floats, then send text VAD packet
-        ws.send(inputData.buffer); 
-        ws.send(JSON.stringify({ type: "vad", db: parseFloat(db.toFixed(2)) }));
-        
-        chunkCount.textContent = `${++totalChunks} buffers sent`;
+        //    IMPORTANT: Copy the data first. inputData.buffer may be a SharedArrayBuffer
+        //    (Chrome's audio pipeline uses shared memory), which WebSocket.send() rejects
+        //    with a TypeError. A plain copy guarantees a regular ArrayBuffer.
+        try {
+          const dataCopy = new Float32Array(inputData);
+          ws.send(dataCopy.buffer);
+          ws.send(JSON.stringify({ type: "vad", db: parseFloat(db.toFixed(2)) }));
+          chunkCount.textContent = `${++totalChunks} buffers sent`;
+        } catch (e) {
+          console.error("[WS] Send failed:", e);
+        }
       };
 
       micSource.connect(scriptNode);
@@ -926,7 +954,10 @@
       historyLog.innerHTML = '<p class="empty-log">Translations will appear here.</p>';
       historyEmpty = true;
     });
-    document.addEventListener("click", () => playbackCtx?.resume());
+    document.addEventListener("click", () => {
+      playbackCtx?.resume();
+      audioCtx?.resume();
+    });
 
     console.log("[INIT] Bridge client ready.");
   })();
