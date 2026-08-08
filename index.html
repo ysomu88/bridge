@@ -752,6 +752,18 @@
             const msg = JSON.parse(evt.data);
             if (msg.type === "subtitle") {
               updateSubtitles(msg.src, msg.tgt);
+            } else if (msg.type === "processing") {
+              // The pipeline (Whisper + Ollama + TTS) takes many seconds.
+              // Show immediate feedback so the user doesn't assume the app
+              // is broken and disconnect (common over remote connections).
+              const q = msg.queued ? ` · ${msg.queued} queued` : "";
+              setStatus("processing");
+              statusLabel.textContent = `Processing…${q}`;
+              // Clear the label back to "Listening…" once done — the next
+              // vad_echo/subtitle/audio message will also reset it.
+              if (playbackCtx) playbackCtx.resume().catch(() => {});
+            } else if (msg.type === "processing_done") {
+              setStatus("listening");
             } else if (msg.type === "tts_config") {
               // Piper outputs at 22050 Hz, Chatterbox varies, Kokoro is 24000 —
               // recreate the context whenever the engine reports a new rate.

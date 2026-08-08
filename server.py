@@ -62,6 +62,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse
 from faster_whisper import WhisperModel
+from starlette.websockets import WebSocketState
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -883,27 +884,40 @@ async def ws_stream(websocket: WebSocket):
     voice_note = f" | Voice: {voice_id}" if voice_id else " | Voice: preset"
     logger.info(f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}{voice_note}")
 
-    processing_lock = asyncio.Lock()
+    # Utterance queue — instead of dropping an utterance when the pipeline is
+    # still busy with the previous one, queue each VAD-triggered utterance's
+    # absolute-end byte offset and process them sequentially in a worker task.
+    # This prevents silent phrase drops in fast back-and-forth conversation,
+    # which is especially noticeable over high-latency remote connections.
+    utterance_queue: asyncio.Queue[int] = asyncio.Queue()
+    consumed_bytes = 0
+    worker_started = False
 
-    async def process_utterance(byte_len: int | None = None):
-        if processing_lock.locked():
-            logger.debug(f"[{session_id}] Pipeline busy — skipping duplicate trigger.")
+    def client_gone() -> bool:
+        try:
+            return websocket.client_state != WebSocketState.CONNECTED
+        except Exception:
+            return True
+
+    async def run_utterance_pipeline(target_abs: int) -> None:
+        nonlocal consumed_bytes
+        if client_gone():
+            logger.info(f"[{session_id}] Client disconnected — skipping queued utterance.")
             return
-        async with processing_lock:
-            if byte_len is None:
-                # No snapshot — process everything (e.g. final flush on disconnect)
-                raw = state.get_buffer_bytes()
-                state.flush_buffer()
-            else:
-                # Snapshot taken at silence-trigger time. Only consume that many
-                # bytes — anything appended after the trigger belongs to the next
-                # utterance. Don't touch has_voice/silence_start, which may already
-                # reflect new speech that started while we were scheduled.
-                state.audio_buffer.seek(0)
-                raw = state.audio_buffer.read(byte_len)
-                remaining = state.audio_buffer.read()
-                state.audio_buffer = io.BytesIO(remaining)
-                state.audio_buffer.seek(0, io.SEEK_END)
+
+        # target_abs is the absolute buffer offset captured at VAD-trigger time
+        # (consumed_bytes + tell() then). consumed_bytes are the bytes already
+        # removed from the front of the buffer by previous utterances, so the
+        # adjusted length is exactly this utterance's share of the current buffer.
+        state.audio_buffer.seek(0)
+        adjusted = target_abs - consumed_bytes
+        if adjusted <= 0:
+            return
+        raw = state.audio_buffer.read(adjusted)
+        remaining = state.audio_buffer.read()
+        state.audio_buffer = io.BytesIO(remaining)
+        state.audio_buffer.seek(0, io.SEEK_END)
+        consumed_bytes += len(raw)
 
         if not raw:
             return
@@ -915,10 +929,16 @@ async def ws_stream(websocket: WebSocket):
             logger.warning(f"[{session_id}] ⚠️  Audio decode returned None — buffer too short or corrupt. ({len(raw)} bytes)")
             return
 
+        if client_gone():
+            return
+
         logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio via '{state.source_lang}' stream config...")
         original_text = await transcribe(audio, state.source_lang)
         if not original_text:
             logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript.")
+            return
+
+        if client_gone():
             return
 
         logger.info(f"[{session_id}] 🔄 Translating now")
@@ -927,9 +947,35 @@ async def ws_stream(websocket: WebSocket):
             logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
             return
 
+        if client_gone():
+            logger.info(f"[{session_id}] Client disconnected before TTS — skipping synthesis.")
+            return
+
         await synthesise_and_stream(
             translated_text, websocket, original_text, state.source_lang, state.target_lang, state.voice_id
         )
+
+    async def utterance_worker() -> None:
+        nonlocal consumed_bytes, worker_started
+        try:
+            while True:
+                target_abs = await utterance_queue.get()
+                if target_abs < 0:  # sentinel — session is over
+                    break
+                await run_utterance_pipeline(target_abs)
+                if len(state.audio_buffer.getvalue()) == 0:
+                    # Buffer fully drained — reset the consumed offset for the
+                    # next conversation segment.
+                    consumed_bytes = 0
+                await asyncio.sleep(0)  # yield back to the event loop
+        finally:
+            worker_started = False
+
+    def ensure_worker() -> None:
+        nonlocal worker_started
+        if not worker_started:
+            worker_started = True
+            asyncio.create_task(utterance_worker())
 
     vad_silence_db: float = VAD_SILENCE_DB
 
@@ -993,27 +1039,44 @@ async def ws_stream(websocket: WebSocket):
                             )
                             state.has_voice = False
                             state.silence_start = None
-                            # Snapshot the buffer length NOW, at trigger time, so
-                            # process_utterance only consumes audio up to this point.
-                            # Audio appended after this (start of next utterance) stays
-                            # in the buffer for the next VAD cycle.
-                            trigger_len = state.audio_buffer.tell()
-                            asyncio.create_task(process_utterance(trigger_len))
+                            if client_gone():
+                                continue
+                            # Immediate feedback so the browser shows "Processing…".
+                            # The pipeline takes many seconds (Whisper + Ollama +
+                            # TTS) — without this the user sees nothing happen and
+                            # may assume the app is broken and disconnect (exactly
+                            # what happened with the remote user).
+                            try:
+                                await websocket.send_text(json.dumps({
+                                    "type": "processing",
+                                    "queued": utterance_queue.qsize(),
+                                }))
+                            except Exception:
+                                continue
+                            # Snapshot the buffer's absolute end offset NOW, at
+                            # trigger time, so the worker only consumes audio up to
+                            # this point. Audio appended after this (start of next
+                            # utterance) stays in the buffer for the next VAD cycle.
+                            trigger_abs = consumed_bytes + state.audio_buffer.tell()
+                            utterance_queue.put_nowait(trigger_abs)
+                            ensure_worker()
 
     except (WebSocketDisconnect, RuntimeError) as exc:
         if isinstance(exc, RuntimeError) and "disconnect" not in str(exc).lower():
             logger.exception(f"[{session_id}] Unexpected error")
         else:
             logger.info(f"[{session_id}] Client disconnected.")
-        if state.has_voice and len(state.get_buffer_bytes()) > 0:
-            logger.info(f"[{session_id}] Processing final utterance on disconnect.")
-            asyncio.create_task(process_utterance())
-        else:
-            state.flush_buffer()
     except Exception:
         logger.exception(f"[{session_id}] Unexpected error")
-        state.flush_buffer()
     finally:
+        # Socket is closed — no audio can be delivered, and any queued/in-flight
+        # pipeline will bail out at its next client_gone() checkpoint. Unblock the
+        # worker with a sentinel so it can exit cleanly.
+        while not utterance_queue.empty():
+            utterance_queue.get_nowait()
+        utterance_queue.put_nowait(-1)
+        state.flush_buffer()
+        consumed_bytes = 0
         logger.info(f"[{session_id}] Session closed.")
 
 
