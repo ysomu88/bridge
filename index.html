@@ -234,6 +234,107 @@
     .history-item .hi-right { font-family: var(--font-body); font-size: 0.88rem; color: var(--text-mid); border-left: 2px solid var(--accent-es); padding-left: 0.5rem; }
     .empty-log { color: var(--text-lo); font-size: 0.82rem; font-style: italic; text-align: center; padding: 2rem 0; }
 
+    /* ── Onboarding hint ── */
+    .onboard {
+      width: 100%; max-width: 860px;
+      margin-bottom: 1.5rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden;
+    }
+    .onboard-toggle {
+      width: 100%; padding: 0.75rem 1rem;
+      display: flex; align-items: center; justify-content: space-between;
+      background: none; border: none; cursor: pointer;
+      font-family: var(--font-display); font-size: 0.82rem; font-weight: 600;
+      color: var(--text-hi); letter-spacing: 0.03em;
+      transition: color var(--transition);
+    }
+    .onboard-toggle:hover { color: var(--accent-en); }
+    .onboard-chev { transition: transform var(--transition); color: var(--text-mid); }
+    .onboard-toggle[aria-expanded="true"] .onboard-chev { transform: rotate(180deg); }
+    .onboard-body {
+      padding: 0 1.25rem 1rem 1.25rem;
+      font-size: 0.82rem; color: var(--text-mid); line-height: 1.65;
+    }
+    .onboard-body ol { padding-left: 1.2rem; margin: 0 0 0.5rem 0; display: flex; flex-direction: column; gap: 0.35rem; }
+    .onboard-body strong { color: var(--text-hi); }
+    .onboard-note {
+      font-family: var(--font-body); font-style: italic; font-size: 0.76rem;
+      color: var(--text-lo); border-top: 1px solid var(--border); padding-top: 0.6rem; margin-top: 0.4rem;
+    }
+
+    /* ── Voice cloning panel ── */
+    .voice-panel {
+      width: 100%; max-width: 860px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      display: flex; flex-direction: column; gap: 0.85rem;
+    }
+    .voice-panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .voice-panel-title {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text-lo);
+    }
+    .voice-toggle {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.78rem; color: var(--text-mid); cursor: pointer;
+      user-select: none;
+    }
+    .voice-toggle input[type=checkbox] {
+      width: 16px; height: 16px; accent-color: var(--accent-en); cursor: pointer;
+    }
+    .voice-toggle.disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .voice-sample-phrase {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.85rem 1rem;
+      display: flex; flex-direction: column; gap: 0.4rem;
+    }
+    .voice-sample-phrase-label {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--accent-es);
+    }
+    .voice-sample-phrase-text {
+      font-family: var(--font-body); font-style: italic; font-size: 0.86rem;
+      line-height: 1.6; color: var(--text-hi);
+    }
+
+    .voice-record-row {
+      display: flex; align-items: center; gap: 0.75rem;
+    }
+    .btn-record {
+      flex: 1; padding: 0.65rem 1.1rem; border: none; border-radius: 8px;
+      font-family: var(--font-display); font-size: 0.82rem; font-weight: 600;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+      background: var(--surface-2); color: var(--text-hi); border: 1px solid var(--border);
+      transition: border-color var(--transition), color var(--transition);
+    }
+    .btn-record:hover:not(:disabled) { border-color: var(--accent-es); color: var(--accent-es); }
+    .btn-record:disabled { opacity: 0.32; cursor: not-allowed; }
+    .btn-record.recording {
+      border-color: var(--red); color: var(--red);
+      animation: pulse 0.8s ease-in-out infinite;
+    }
+
+    .voice-status-text {
+      font-family: var(--font-body); font-size: 0.8rem; color: var(--text-mid);
+      flex-shrink: 0; min-width: 110px; text-align: right;
+    }
+    .voice-status-text.ready { color: var(--green); }
+    .voice-status-text.recording { color: var(--red); }
+
+    .voice-hint {
+      font-family: var(--font-body); font-style: italic; font-size: 0.74rem;
+      color: var(--text-lo); line-height: 1.5;
+    }
+
+    .voice-unavailable-note {
+      font-size: 0.76rem; color: var(--text-lo); font-style: italic;
+    }
+
     @media (max-width: 600px) {
       .subtitle-panel { grid-template-columns: 1fr; }
       .history-item   { grid-template-columns: 1fr; }
@@ -263,6 +364,8 @@
       <option value="ko">🇰🇷 Korean</option>
       <option value="pt">🇧🇷 Portuguese</option>
       <option value="hi">🇮🇳 Hindi</option>
+      <option value="de">🇩🇪 German</option>
+      <option value="te">🇮🇳 Telugu</option>
     </select>
     <button class="lang-swap-btn" id="btn-swap" title="Swap languages">⇌</button>
     <label>To</label>
@@ -276,7 +379,60 @@
       <option value="ko">🇰🇷 Korean</option>
       <option value="pt">🇧🇷 Portuguese</option>
       <option value="hi">🇮🇳 Hindi</option>
+      <option value="de">🇩🇪 German</option>
+      <option value="te">🇮🇳 Telugu</option>
     </select>
+  </div>
+
+  <!-- Onboarding hint -->
+  <div class="onboard" id="onboard">
+    <button class="onboard-toggle" id="btn-onboard-toggle" type="button" aria-expanded="false">
+      <span>❓ How to use Bridge</span>
+      <span class="onboard-chev">▾</span>
+    </button>
+    <div class="onboard-body" id="onboard-body" hidden>
+      <ol>
+        <li><strong>Pick your languages</strong> — <em>From</em> is what you speak, <em>To</em> is what you hear. Use <b>⇌</b> to swap.</li>
+        <li><strong>(Optional) Clone your voice</strong> — read the sample aloud for ~15s in a quiet room, wait for <em>Voice ready ✓</em>, and make sure <b>Use my cloned voice</b> is checked.</li>
+        <li><strong>▶ Start Listening</strong> — click the button, then grant mic access when prompted. That's all the setup you need.</li>
+        <li><strong>Just speak</strong> — Bridge listens continuously. As soon as you pause after a sentence, it translates automatically and reads the result back — no buttons to press between sentences. You'll see <em>Processing…</em> while it works.</li>
+        <li><strong>⏹ Stop</strong> only when you're finished.</li>
+      </ol>
+      <p class="onboard-note">
+        ⏳ <strong>Expect a 5–20s delay</strong> between speaking and playback — that's the translation + voice-cloning pipeline working, not a bug.
+        Voice samples are stored locally and deleted on shutdown (privacy first).
+      </p>
+    </div>
+  </div>
+
+  <!-- Voice cloning panel -->
+  <div class="voice-panel" id="voice-panel">
+    <div class="voice-panel-header">
+      <span class="voice-panel-title">Playback Voice</span>
+      <label class="voice-toggle" id="voice-toggle-wrap">
+        <input type="checkbox" id="use-cloned-voice" disabled />
+        <span id="voice-toggle-label">Use my cloned voice</span>
+      </label>
+    </div>
+
+    <div class="voice-sample-phrase">
+      <span class="voice-sample-phrase-label">Try reading this aloud</span>
+      <p class="voice-sample-phrase-text">
+        "The quick brown fox jumps over the lazy dog near the riverbank every morning.
+        I enjoy traveling to new places and learning about different cultures around the world.
+        Yesterday, the weather was sunny and warm, so we decided to go for a long walk in the park."
+      </p>
+    </div>
+
+    <div class="voice-record-row">
+      <button class="btn-record" id="btn-record-voice" disabled>🎙️ Record a 15s sample</button>
+      <span class="voice-status-text" id="voice-status-text">No voice recorded</span>
+    </div>
+
+    <p class="voice-hint" id="voice-hint">
+      Speak naturally for at least 10 seconds in a quiet room. This clip is used to clone your
+      voice locally — nothing leaves your machine.
+    </p>
   </div>
 
   <div class="status-bar">
@@ -357,6 +513,19 @@
     const thresholdValue  = document.getElementById("threshold-value");
     const thresholdMarker = document.getElementById("threshold-marker");
 
+    // Onboarding refs
+    const btnOnboardToggle = document.getElementById("btn-onboard-toggle");
+    const onboardBody      = document.getElementById("onboard-body");
+
+    // Voice cloning refs
+    const voicePanel        = document.getElementById("voice-panel");
+    const voiceToggleWrap    = document.getElementById("voice-toggle-wrap");
+    const useClonedVoiceBox  = document.getElementById("use-cloned-voice");
+    const voiceToggleLabel   = document.getElementById("voice-toggle-label");
+    const btnRecordVoice     = document.getElementById("btn-record-voice");
+    const voiceStatusText    = document.getElementById("voice-status-text");
+    const voiceHint          = document.getElementById("voice-hint");
+
     // ── Language metadata ─────────────────────────────────────────────
     const LANGUAGES = {
       en: { label: "English",    transcribe: "Listening for speech…",    translate: "Waiting for translation…"  },
@@ -368,6 +537,8 @@
       ko: { label: "Korean",     transcribe: "음성을 기다리는 중…",           translate: "번역을 기다리는 중…"           },
       pt: { label: "Portuguese", transcribe: "Aguardando fala…",          translate: "Aguardando tradução…"      },
       hi: { label: "Hindi",       transcribe: "बोलने की प्रतीक्षा है…",       translate: "अनुवाद की प्रतीक्षा है…"     },
+      de: { label: "German",      transcribe: "Warte auf Sprache…",           translate: "Warte auf Übersetzung…"        },
+      te: { label: "Telugu",      transcribe: "మాట్లాడటానికి వేచి ఉంది…",      translate: "అనువాదం కోసం వేచి ఉంది…"      },
     };
 
     // ── State ─────────────────────────────────────────────────────────
@@ -379,11 +550,20 @@
     let scriptNode    = null;
     let micSource     = null;
 
-    let playbackCtx   = null;
-    let nextPlayTime  = 0;
-    const SAMPLE_RATE = 24000;
+    let playbackCtx    = null;
+    let nextPlayTime   = 0;
+    const SAMPLE_RATE  = 24000;  // Kokoro default
+    let currentSampleRate = SAMPLE_RATE;  // updated by tts_config when Piper/Chatterbox sends a different rate
 
     let silenceThresholdDb = parseFloat(thresholdSlider.value);
+
+    // Voice cloning state
+    let voiceCloningAvailable = false;
+    let registeredVoiceId     = null;   // set after a successful upload
+    let voiceMediaRecorder    = null;
+    let voiceRecordedChunks   = [];
+    let voiceRecordStream     = null;
+    const VOICE_SAMPLE_MS     = 15000;  // 15 seconds, auto-stops
 
     // ── Language selector logic ───────────────────────────────────────
     function getSource() { return selectSource.value; }
@@ -401,6 +581,11 @@
       selectSource.disabled = disabled;
       selectTarget.disabled = disabled;
       btnSwap.disabled      = disabled;
+
+      // Lock voice cloning controls during an active session too —
+      // re-recording or toggling mid-conversation would be confusing.
+      btnRecordVoice.disabled = disabled || !voiceCloningAvailable;
+      useClonedVoiceBox.disabled = disabled || !voiceCloningAvailable || !registeredVoiceId;
     }
 
     // Prevent same language on both sides
@@ -462,10 +647,128 @@
     });
     updateThresholdMarker();
 
+    // ── Voice cloning ──────────────────────────────────────────────────
+    async function checkVoiceCloningAvailability() {
+      try {
+        const resp = await fetch("/api/voice/status");
+        const data = await resp.json();
+        voiceCloningAvailable = !!data.available;
+      } catch (e) {
+        voiceCloningAvailable = false;
+      }
+
+      if (voiceCloningAvailable) {
+        btnRecordVoice.disabled = false;
+        voiceStatusText.textContent = "No voice recorded";
+      } else {
+        voicePanel.classList.add("voice-unavailable");
+        voiceHint.innerHTML =
+          "Voice cloning isn't available on this server — chatterbox-tts isn't installed. " +
+          "Translations will use a preset voice instead.";
+        voiceStatusText.textContent = "Unavailable";
+        btnRecordVoice.disabled = true;
+        useClonedVoiceBox.disabled = true;
+      }
+    }
+
+    async function startVoiceRecording() {
+      if (!voiceCloningAvailable || ws || micStream) return; // don't allow mid-session
+
+      try {
+        voiceRecordStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        console.error("[VOICE] Mic permission error:", err);
+        voiceStatusText.textContent = "Mic error";
+        return;
+      }
+
+      voiceRecordedChunks = [];
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus" : "audio/webm";
+      voiceMediaRecorder = new MediaRecorder(voiceRecordStream, { mimeType });
+
+      voiceMediaRecorder.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0) voiceRecordedChunks.push(evt.data);
+      };
+
+      voiceMediaRecorder.onstop = async () => {
+        voiceRecordStream?.getTracks().forEach(t => t.stop());
+        voiceRecordStream = null;
+        btnRecordVoice.classList.remove("recording");
+        btnRecordVoice.textContent = "🎙️ Record a 15s sample";
+        voiceStatusText.textContent = "Uploading…";
+
+        const blob = new Blob(voiceRecordedChunks, { type: mimeType });
+        await uploadVoiceSample(blob);
+      };
+
+      voiceMediaRecorder.start();
+      btnRecordVoice.classList.add("recording");
+      btnRecordVoice.textContent = "⏹ Recording… (auto-stops in 15s)";
+      voiceStatusText.textContent = "Recording…";
+      voiceStatusText.className = "voice-status-text recording";
+
+      // Auto-stop after VOICE_SAMPLE_MS
+      setTimeout(() => {
+        if (voiceMediaRecorder && voiceMediaRecorder.state === "recording") {
+          voiceMediaRecorder.stop();
+        }
+      }, VOICE_SAMPLE_MS);
+    }
+
+    function stopVoiceRecordingManually() {
+      if (voiceMediaRecorder && voiceMediaRecorder.state === "recording") {
+        voiceMediaRecorder.stop();
+      }
+    }
+
+    async function uploadVoiceSample(blob) {
+      const formData = new FormData();
+      formData.append("file", blob, "voice_sample.webm");
+
+      try {
+        const resp = await fetch("/api/voice/upload", { method: "POST", body: formData });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        registeredVoiceId = data.voice_id;
+
+        voiceStatusText.textContent = "Voice ready ✓";
+        voiceStatusText.className = "voice-status-text ready";
+        useClonedVoiceBox.disabled = false;
+        useClonedVoiceBox.checked = true;
+        console.log(`[VOICE] Registered voice profile: ${registeredVoiceId}`);
+      } catch (err) {
+        console.error("[VOICE] Upload failed:", err);
+        voiceStatusText.textContent = "Upload failed";
+        voiceStatusText.className = "voice-status-text";
+        registeredVoiceId = null;
+      }
+    }
+
+    btnRecordVoice.addEventListener("click", () => {
+      if (voiceMediaRecorder && voiceMediaRecorder.state === "recording") {
+        stopVoiceRecordingManually();
+      } else {
+        startVoiceRecording();
+      }
+    });
+
+    // ── Onboarding toggle ─────────────────────────────────────────────
+    btnOnboardToggle.addEventListener("click", () => {
+      const expanded = btnOnboardToggle.getAttribute("aria-expanded") === "true";
+      btnOnboardToggle.setAttribute("aria-expanded", String(!expanded));
+      onboardBody.hidden = expanded;
+    });
+
+    checkVoiceCloningAvailability();
+
     // ── Web Audio playback ────────────────────────────────────────────
     function ensurePlaybackCtx() {
       if (!playbackCtx || playbackCtx.state === "closed") {
-        playbackCtx  = new AudioContext({ sampleRate: SAMPLE_RATE });
+        playbackCtx  = new AudioContext({ sampleRate: currentSampleRate });
         nextPlayTime = 0;
       }
     }
@@ -476,7 +779,10 @@
       const float32  = new Float32Array(int16Arr.length);
       for (let i = 0; i < int16Arr.length; i++) float32[i] = int16Arr[i] / 32768.0;
 
-      const buffer = playbackCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+      // Create the buffer at the AudioContext's ACTUAL sample rate — Piper
+      // outputs at 22050 Hz and Chatterbox varies, so hardcoding SAMPLE_RATE
+      // here caused pitch/speed distortion after a tts_config rate change.
+      const buffer = playbackCtx.createBuffer(1, float32.length, playbackCtx.sampleRate);
       buffer.copyToChannel(float32, 0);
 
       const source = playbackCtx.createBufferSource();
@@ -491,7 +797,9 @@
     // ── WebSocket ─────────────────────────────────────────────────────
     function connectWebSocket() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${getSource()}&target=${getTarget()}`);
+      const useVoice = useClonedVoiceBox.checked && registeredVoiceId;
+      const voiceParam = useVoice ? `&voice_id=${encodeURIComponent(registeredVoiceId)}` : "";
+      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${getSource()}&target=${getTarget()}${voiceParam}`);
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
@@ -505,6 +813,29 @@
             const msg = JSON.parse(evt.data);
             if (msg.type === "subtitle") {
               updateSubtitles(msg.src, msg.tgt);
+            } else if (msg.type === "processing") {
+              // The pipeline (Whisper + Ollama + TTS) takes many seconds.
+              // Show immediate feedback so the user doesn't assume the app
+              // is broken and disconnect (common over remote connections).
+              const q = msg.queued ? ` · ${msg.queued} queued` : "";
+              setStatus("processing");
+              statusLabel.textContent = `Processing…${q}`;
+              // Clear the label back to "Listening…" once done — the next
+              // vad_echo/subtitle/audio message will also reset it.
+              if (playbackCtx) playbackCtx.resume().catch(() => {});
+            } else if (msg.type === "processing_done") {
+              setStatus("listening");
+            } else if (msg.type === "tts_config") {
+              // Piper outputs at 22050 Hz, Chatterbox varies, Kokoro is 24000 —
+              // recreate the context whenever the engine reports a new rate.
+              if (msg.sample_rate && msg.sample_rate !== currentSampleRate) {
+                currentSampleRate = msg.sample_rate;
+                if (playbackCtx && playbackCtx.state !== "closed") {
+                  playbackCtx.close();
+                }
+                playbackCtx = new AudioContext({ sampleRate: currentSampleRate });
+                nextPlayTime = 0;
+              }
             }
           } catch (e) {
             console.warn("[WS] Non-JSON text:", evt.data);
@@ -521,6 +852,24 @@
 
     // ── Audio Processing & Pipeline ───────────────────────────────────
     async function startCapture() {
+      // Create the AudioContext FIRST, while we still have the user-gesture
+      // context from the button click. Creating it after an `await` (e.g.
+      // getUserMedia) loses that context, and Chrome's autoplay policy then
+      // starts the context in a "suspended" state — onaudioprocess never
+      // fires, so no audio chunks are ever sent.
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        if (audioCtx.state === "suspended") {
+          await audioCtx.resume();
+        }
+        console.log("[AUDIO] AudioContext state:", audioCtx.state);
+      } catch (err) {
+        console.error("[AUDIO] AudioContext init failed:", err);
+        setStatus("error");
+        statusLabel.textContent = "Audio error — check browser settings";
+        return;
+      }
+
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -542,8 +891,6 @@
       setSelectorsDisabled(true);
       connectWebSocket();
 
-      // Setup audio context at native downstream target sample rate (16kHz)
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       micSource = audioCtx.createMediaStreamSource(micStream);
       
       // Create processor node (using 4096 buffer size window)
@@ -553,6 +900,11 @@
 
       scriptNode.onaudioprocess = (audioProcessingEvent) => {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        // Safety net: if the context got suspended (e.g. tab switch), resume it
+        if (audioCtx && audioCtx.state === "suspended") {
+          audioCtx.resume().catch(() => {});
+        }
 
         const inputBuffer = audioProcessingEvent.inputBuffer;
         const inputData = inputBuffer.getChannelData(0); // Float32Array Mono
@@ -580,10 +932,17 @@
         if (!speaking && isSpeaking) { isSpeaking = false; setStatus("listening"); }
 
         // 3. Pipe down the pipeline wire: Send raw binary Floats, then send text VAD packet
-        ws.send(inputData.buffer); 
-        ws.send(JSON.stringify({ type: "vad", db: parseFloat(db.toFixed(2)) }));
-        
-        chunkCount.textContent = `${++totalChunks} buffers sent`;
+        //    IMPORTANT: Copy the data first. inputData.buffer may be a SharedArrayBuffer
+        //    (Chrome's audio pipeline uses shared memory), which WebSocket.send() rejects
+        //    with a TypeError. A plain copy guarantees a regular ArrayBuffer.
+        try {
+          const dataCopy = new Float32Array(inputData);
+          ws.send(dataCopy.buffer);
+          ws.send(JSON.stringify({ type: "vad", db: parseFloat(db.toFixed(2)) }));
+          chunkCount.textContent = `${++totalChunks} buffers sent`;
+        } catch (e) {
+          console.error("[WS] Send failed:", e);
+        }
       };
 
       micSource.connect(scriptNode);
@@ -668,7 +1027,10 @@
       historyLog.innerHTML = '<p class="empty-log">Translations will appear here.</p>';
       historyEmpty = true;
     });
-    document.addEventListener("click", () => playbackCtx?.resume());
+    document.addEventListener("click", () => {
+      playbackCtx?.resume();
+      audioCtx?.resume();
+    });
 
     console.log("[INIT] Bridge client ready.");
   })();

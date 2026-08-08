@@ -7,19 +7,32 @@ Target: RTX 3070 Ti (8GB VRAM), Windows 11, uv package manager
 import os
 import sys
 
-# Dynamic runtime patching for NVIDIA CUDA DLLs and espeak-ng on Windows
+# ── Windows DLL resolution — MUST run before any CUDA imports ─────────────────
+# ctranslate2 and torch both ship cudnn64_9.dll but ctranslate2's copy is
+# missing cudnnGetLibConfig (added in cuDNN 9.x) which torch requires.
+# We must register torch's lib dir with the Windows DLL loader BEFORE
+# ctranslate2 gets a chance to load its copy, otherwise the symbol is missing
+# and torchaudio fails with [WinError 127].
 if sys.platform == "win32":
-    venv_base = os.path.join(os.path.dirname(__file__), ".venv", "Lib", "site-packages")
-    cublas_path = os.path.join(venv_base, "nvidia", "cublas", "bin")
-    cudnn_path = os.path.join(venv_base, "nvidia", "cudnn", "bin")
+    import ctypes
 
-    if os.path.exists(cublas_path):
-        os.environ["PATH"] = cublas_path + os.pathsep + os.environ["PATH"]
-    if os.path.exists(cudnn_path):
-        os.environ["PATH"] = cudnn_path + os.pathsep + os.environ["PATH"]
+    venv_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "Lib", "site-packages")
+    torch_lib = os.path.join(venv_base, "torch", "lib")
+
+    if os.path.exists(torch_lib):
+        # Force-load torch's cuDNN DLL explicitly before anything else can grab it
+        for dll_name in ["cudnn64_9.dll", "cudnn_adv64_9.dll", "cudnn_cnn64_9.dll",
+                         "cudnn_ops64_9.dll"]:
+            dll_path = os.path.join(torch_lib, dll_name)
+            if os.path.exists(dll_path):
+                try:
+                    ctypes.CDLL(dll_path)
+                except OSError:
+                    pass
+        os.add_dll_directory(torch_lib)
+        os.environ["PATH"] = torch_lib + os.pathsep + os.environ["PATH"]
 
     # espeak-ng — required by kokoro-onnx for non-English phonemization
-    # (Chinese, Hindi, Japanese, French, etc.)
     espeak_dir = r"C:\Program Files\eSpeak NG"
     espeak_dll = os.path.join(espeak_dir, "libespeak-ng.dll")
     espeak_exe = os.path.join(espeak_dir, "espeak-ng.exe")
@@ -35,14 +48,21 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import httpx
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse
 from faster_whisper import WhisperModel
+from starlette.websockets import WebSocketState
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -57,8 +77,19 @@ logger = logging.getLogger("bridge")
 # ---------------------------------------------------------------------------
 # Global model references (loaded once at startup via lifespan)
 # ---------------------------------------------------------------------------
-whisper_model: Optional[WhisperModel] = None
+whisper_model: WhisperModel | None = None
 kokoro_pipeline = None
+piper_voices: dict = {}     # lang_code -> PiperVoice instance
+chatterbox_model = None     # ChatterboxMultilingualTTS instance, shared across all cloned-voice sessions
+voice_profiles: dict = {}   # voice_id -> absolute path to the user's reference WAV clip
+voice_conditionals: dict = {}  # voice_id -> cached Conditionals object (avoids re-embedding on every request)
+cuda_lock = asyncio.Lock()  # serializes ALL GPU work (Whisper + Chatterbox) — see note in transcribe() and _synthesise_chatterbox()
+
+VOICE_SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "voice_samples")
+CHATTERBOX_LANGUAGES = {
+    "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it",
+    "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +97,7 @@ kokoro_pipeline = None
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global whisper_model, kokoro_pipeline
+    global whisper_model, kokoro_pipeline, chatterbox_model
 
     # ── Whisper (STT) ──────────────────────────────────────────────────────
     logger.info("Loading faster-whisper 'base' model on CUDA (int8)…")
@@ -98,6 +129,84 @@ async def lifespan(app: FastAPI):
         logger.info("TTS disabled — fix the error above and restart to enable audio output.")
         kokoro_pipeline = None
 
+    # ── Piper TTS (Korean, German) ────────────────────────────────────────
+    try:
+        from piper import PiperVoice  # type: ignore
+
+        PIPER_VOICE_FILES = {
+            "ko": ("piper_voices/piper-kss-korean.onnx", "piper_voices/piper-kss-korean.onnx.json"),
+            "de": ("piper_voices/de_DE-thorsten-high.onnx", "piper_voices/de_DE-thorsten-high.onnx.json"),
+        }
+
+        for lang, (model_path, config_path) in PIPER_VOICE_FILES.items():
+            if os.path.exists(model_path) and os.path.exists(config_path):
+                try:
+                    piper_voices[lang] = PiperVoice.load(model_path, config_path=config_path, use_cuda=False)
+                    logger.info(f"✅ Piper voice loaded for '{lang}' ({model_path})")
+                except Exception as exc:
+                    logger.warning(f"⚠️  Piper failed to load voice for '{lang}': {exc}")
+            else:
+                logger.warning(
+                    f"⚠️  Piper voice files not found for '{lang}'. "
+                    f"Download to: {model_path} — see DOCUMENTATION.md for instructions."
+                )
+    except ImportError:
+        logger.warning("piper-tts not installed — Korean/German TTS disabled. Run: uv pip install piper-tts")
+
+    # ── Chatterbox Multilingual (voice cloning) ─────────────────────────────
+    try:
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
+
+        logger.info("Loading Chatterbox Multilingual (voice cloning, ~2-3 GB VRAM)…")
+        try:
+            chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
+            logger.info("✅ Chatterbox Multilingual loaded on CUDA.")
+        except Exception as exc:
+            logger.warning(f"CUDA unavailable for Chatterbox ({exc}). Falling back to CPU — cloning will be slow.")
+            chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device="cpu")
+            logger.info("✅ Chatterbox Multilingual loaded on CPU.")
+    except ImportError:
+        logger.warning(
+            "chatterbox-tts not installed — voice cloning disabled. Run: uv pip install chatterbox-tts"
+        )
+        chatterbox_model = None
+    except Exception as exc:
+        logger.error(f"Chatterbox init failed: {exc}")
+        chatterbox_model = None
+
+    # ── Instrument s3gen (vocoder) and watermarker with timing ──────────────
+    # generate() showed a large, unexplained gap between "EOS token detected"
+    # (T3 sampling finishes) and the function actually returning. That gap is
+    # the s3gen.inference() (mel→waveform) and watermarker.apply_watermark()
+    # calls, which aren't logged internally. Wrapping them here gives us hard
+    # numbers without editing site-packages files directly (survives reinstalls).
+    if chatterbox_model is not None:
+        try:
+            _orig_s3gen_inference = chatterbox_model.s3gen.inference
+
+            def _timed_s3gen_inference(*args, **kwargs):
+                t0 = time.monotonic()
+                result = _orig_s3gen_inference(*args, **kwargs)
+                logger.info(f"[chatterbox] s3gen.inference (vocoder): {time.monotonic() - t0:.1f}s")
+                return result
+
+            chatterbox_model.s3gen.inference = _timed_s3gen_inference
+
+            _orig_apply_watermark = chatterbox_model.watermarker.apply_watermark
+
+            def _timed_apply_watermark(*args, **kwargs):
+                t0 = time.monotonic()
+                result = _orig_apply_watermark(*args, **kwargs)
+                logger.info(f"[chatterbox] watermarker.apply_watermark: {time.monotonic() - t0:.1f}s")
+                return result
+
+            chatterbox_model.watermarker.apply_watermark = _timed_apply_watermark
+            logger.info("✅ Chatterbox instrumented with vocoder/watermark timing.")
+        except Exception as exc:
+            logger.warning(f"Could not instrument Chatterbox timing (non-fatal): {exc}")
+
+    os.makedirs(VOICE_SAMPLES_DIR, exist_ok=True)
+
     # ── Ollama connectivity check ───────────────────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -118,7 +227,22 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down — releasing model resources.")
     whisper_model = None
     kokoro_pipeline = None
+    piper_voices.clear()
+    chatterbox_model = None
+    voice_profiles.clear()
+    voice_conditionals.clear()
 
+    # Privacy: delete all voice sample files from disk on shutdown.
+    # Users' recorded voice clips should never persist beyond a single session.
+    if os.path.isdir(VOICE_SAMPLES_DIR):
+        deleted = 0
+        for f in os.listdir(VOICE_SAMPLES_DIR):
+            try:
+                os.remove(os.path.join(VOICE_SAMPLES_DIR, f))
+                deleted += 1
+            except Exception as exc:
+                logger.warning(f"Could not delete voice sample {f}: {exc}")
+        logger.info(f"🗑️  Deleted {deleted} voice sample file(s) from {VOICE_SAMPLES_DIR}.")
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -142,14 +266,15 @@ class SessionState:
 
     CHUNK_SR: int = 16_000
 
-    def __init__(self, session_id: str, source_lang: str = "en", target_lang: str = "es"):
+    def __init__(self, session_id: str, source_lang: str = "en", target_lang: str = "es", voice_id: str | None = None):
         self.session_id = session_id
         self.source_lang = source_lang
         self.target_lang = target_lang
+        self.voice_id = voice_id  # cloned voice profile id, or None for preset voices
         self.audio_buffer = io.BytesIO()
         self.has_voice: bool = False
-        self.speech_start: Optional[float] = None
-        self.silence_start: Optional[float] = None
+        self.speech_start: float | None = None
+        self.silence_start: float | None = None
 
     def append_chunk(self, data: bytes) -> None:
         self.audio_buffer.write(data)
@@ -172,7 +297,7 @@ class SessionState:
 # ---------------------------------------------------------------------------
 # Audio helpers
 # ---------------------------------------------------------------------------
-def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> Optional[np.ndarray]:
+def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> np.ndarray | None:
     """
     Directly converts raw incoming PCM Float32 bytes from the browser 
     into a NumPy array, completely bypassing container parsers.
@@ -219,7 +344,13 @@ async def transcribe(audio: np.ndarray, source_lang: str) -> str:
         )
         return " ".join(seg.text.strip() for seg in segments).strip()
 
-    text = await loop.run_in_executor(None, _run)
+    # Whisper and Chatterbox share one GPU. Running them concurrently causes
+    # real contention — observed empty/corrupted transcripts and a 31s+ vocoder
+    # stall in Chatterbox when both fired at once. Serializing via cuda_lock
+    # trades some throughput for correctness: nothing else touches the GPU
+    # while either model is actively running.
+    async with cuda_lock:
+        text = await loop.run_in_executor(None, _run)
     # logger.info(f"📝 Transcript ({source_lang}): {text!r}")
     return text
 
@@ -240,6 +371,7 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
         "en": "English", "es": "Spanish", "fr": "French",
         "it": "Italian", "ja": "Japanese", "zh": "Chinese",
         "ko": "Korean",  "pt": "Portuguese", "hi": "Hindi",
+        "de": "German",  "te": "Telugu",
     }
     src_name = LANGUAGE_NAMES.get(source_lang, source_lang.upper())
     tgt_name = LANGUAGE_NAMES.get(target_lang, target_lang.upper())
@@ -292,6 +424,201 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# TTS via Piper (Korean, German)
+# ---------------------------------------------------------------------------
+async def _synthesise_piper(
+    text: str,
+    target_lang: str,
+    websocket: WebSocket,
+    loop,
+) -> None:
+    """Synthesise text using Piper and stream raw int16 PCM back to client."""
+    import io as _io
+    import wave as _wave
+
+    voice = piper_voices.get(target_lang)
+    if voice is None:
+        return
+
+    def _generate():
+        buf = _io.BytesIO()
+        with _wave.open(buf, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)                        # 16-bit PCM
+            wav.setframerate(voice.config.sample_rate) # 22050 Hz for Thorsten
+            voice.synthesize(text, wav)
+        buf.seek(0)
+        with _wave.open(buf, "rb") as wav:
+            return wav.readframes(wav.getnframes()), wav.getframerate()
+
+    try:
+        pcm_bytes, sample_rate = await loop.run_in_executor(None, _generate)
+    except Exception as exc:
+        logger.error(f"Piper synthesis error for '{target_lang}': {exc}")
+        return
+
+    # Piper outputs at 22050 Hz — send sample rate so client can adapt
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception:
+        return
+
+    # Stream in chunks
+    CHUNK = 4800  # ~100 ms at 22050 Hz (int16 = 2 bytes per sample)
+    for i in range(0, len(pcm_bytes), CHUNK * 2):
+        chunk = pcm_bytes[i : i + CHUNK * 2]
+        if not chunk:
+            continue
+        try:
+            await websocket.send_bytes(chunk)
+        except Exception:
+            logger.warning("WebSocket closed during Piper TTS streaming.")
+            return
+
+    logger.info(f"🔊 Piper TTS stream complete ({target_lang}).")
+
+
+# ---------------------------------------------------------------------------
+# TTS via Chatterbox Multilingual (voice cloning)
+# ---------------------------------------------------------------------------
+async def _synthesise_chatterbox(
+    text: str,
+    target_lang: str,
+    websocket: WebSocket,
+    loop,
+    voice_id: str,
+) -> None:
+    """
+    Synthesise text in the user's cloned voice via Chatterbox Multilingual,
+    then stream raw int16 PCM back to the client.
+    """
+    if chatterbox_model is None:
+        logger.warning("Chatterbox not loaded — falling back to preset voice.")
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    ref_path = voice_profiles.get(voice_id)
+    if ref_path is None or not os.path.exists(ref_path):
+        logger.warning(f"Voice profile '{voice_id}' not found on disk — falling back to preset voice.")
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    if target_lang not in CHATTERBOX_LANGUAGES:
+        logger.warning(
+            f"Chatterbox does not support '{target_lang}' — falling back to preset voice for this language."
+        )
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    def _generate():
+        # Compute the voice embedding once per voice_id and cache it. Chatterbox's
+        # generate() re-runs prepare_conditionals() (librosa load, resample, speaker
+        # embedding, tokenization) on EVERY call when audio_prompt_path is passed —
+        # this was costing 6-9 seconds per translation. Caching the resulting
+        # Conditionals object and swapping model.conds directly skips that entirely
+        # on repeat requests for the same voice.
+        cached = voice_conditionals.get(voice_id)
+        if cached is None:
+            logger.info(f"[{voice_id}] Conditionals cache MISS — computing embedding...")
+            embed_start = time.monotonic()
+            chatterbox_model.prepare_conditionals(ref_path, exaggeration=0.5)
+            voice_conditionals[voice_id] = chatterbox_model.conds
+            logger.info(f"[{voice_id}] Embedding computed in {time.monotonic() - embed_start:.1f}s")
+        else:
+            logger.info(f"[{voice_id}] Conditionals cache HIT — skipping embedding.")
+            chatterbox_model.conds = cached
+
+        gen_start = time.monotonic()
+        wav_tensor = chatterbox_model.generate(
+            text,
+            language_id=target_lang,
+            audio_prompt_path=None,  # conds already set above — skips re-embedding
+            cfg_weight=0.3,
+            exaggeration=0.5,
+        )
+        logger.info(f"[{voice_id}] Generation finished in {time.monotonic() - gen_start:.1f}s")
+        return wav_tensor, chatterbox_model.sr
+
+    pipeline_start = time.monotonic()
+    try:
+        async with cuda_lock:
+            wav_tensor, sample_rate = await loop.run_in_executor(None, _generate)
+    except Exception as exc:
+        logger.error(f"Chatterbox synthesis error for voice '{voice_id}': {exc}")
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+
+    logger.info(f"[{voice_id}] Total synthesis (lock + generate): {time.monotonic() - pipeline_start:.1f}s")
+
+    # wav_tensor is a torch tensor shaped [1, n_samples], float32 in [-1, 1]
+    audio_array = wav_tensor.squeeze(0).cpu().numpy()
+
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception as exc:
+        logger.warning(f"[{voice_id}] Client disconnected before audio could be sent: {exc}")
+        return
+
+    pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+    pcm_bytes = pcm_int16.tobytes()
+
+    CHUNK = 4800  # ~100-200ms depending on sample rate, 2 bytes/sample
+    for i in range(0, len(pcm_bytes), CHUNK * 2):
+        chunk = pcm_bytes[i : i + CHUNK * 2]
+        if not chunk:
+            continue
+        try:
+            await websocket.send_bytes(chunk)
+        except Exception:
+            logger.warning("WebSocket closed during Chatterbox TTS streaming.")
+            return
+
+    logger.info(f"🎙️  Chatterbox cloned-voice TTS stream complete ({target_lang}, voice={voice_id}).")
+
+
+async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket: WebSocket, loop) -> None:
+    """If cloning fails for any reason, fall back to the normal preset-voice pipeline."""
+    PIPER_LANGUAGES = {"ko", "de"}
+    if target_lang in PIPER_LANGUAGES and target_lang in piper_voices:
+        await _synthesise_piper(text, target_lang, websocket, loop)
+        return
+
+    if kokoro_pipeline is None:
+        logger.warning("No fallback TTS engine available — subtitles only.")
+        return
+
+    KOKORO_LANG_MAP = {
+        "en": ("en-us", "af_heart"), "es": ("es", "ef_dora"), "fr": ("fr-fr", "ff_siwis"),
+        "it": ("it", "if_sara"), "ja": ("ja", "jf_alpha"), "zh": ("cmn", "zf_xiaobei"),
+        "hi": ("hi", "hf_alpha"), "pt": ("pt-br", "pf_dora"),
+    }
+    kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
+
+    def _generate():
+        samples, sample_rate = kokoro_pipeline.create(text, voice=voice_code, speed=1.0, lang=kokoro_lang)
+        chunk_size = 2400
+        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
+        return chunks, sample_rate
+
+    try:
+        chunks, sample_rate = await loop.run_in_executor(None, _generate)
+    except Exception as exc:
+        logger.error(f"Kokoro fallback executor error: {exc}")
+        return
+
+    # Send the actual sample rate so the client can adapt (same as the main Kokoro path).
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception:
+        return
+
+    for audio_array in chunks:
+        if audio_array is None or len(audio_array) == 0:
+            continue
+        pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+        try:
+            await websocket.send_bytes(pcm_int16.tobytes())
+        except Exception:
+            return
+
+
+# ---------------------------------------------------------------------------
 # TTS via Kokoro-82M
 # ---------------------------------------------------------------------------
 async def synthesise_and_stream(
@@ -300,6 +627,7 @@ async def synthesise_and_stream(
     original_text: str,
     source_lang: str,
     target_lang: str,
+    session_voice_id: str | None = None,
 ) -> None:
     """Synthesise target text and stream PCM bytes back to client with layout routing indicators."""
     if not translated_text:
@@ -318,13 +646,31 @@ async def synthesise_and_stream(
     except Exception:
         return
 
+    loop = asyncio.get_running_loop()
+
+    # ── Route to a cloned voice via Chatterbox if this session has one ──
+    if session_voice_id and session_voice_id in voice_profiles:
+        await _synthesise_chatterbox(translated_text, target_lang, websocket, loop, session_voice_id)
+        return
+
+    # ── Route to Piper for languages Kokoro doesn't support ─────────────
+    PIPER_LANGUAGES = {"ko", "de"}
+
+    if target_lang in PIPER_LANGUAGES:
+        if target_lang not in piper_voices:
+            logger.warning(
+                f"Piper voice for '{target_lang}' not loaded — subtitles only. "
+                f"Download the voice files and place them in piper_voices/."
+            )
+            return
+        await _synthesise_piper(translated_text, target_lang, websocket, loop)
+        return
+
     if kokoro_pipeline is None:
         logger.warning("Kokoro not available — skipping TTS.")
         return
 
-    loop = asyncio.get_running_loop()
-    
-    # Kokoro language codes and default voices per language
+    # ── Kokoro for all other languages ────────────────────────────────────
     KOKORO_LANG_MAP = {
         "en": ("en-us", "af_heart"),
         "es": ("es",    "ef_dora"),
@@ -335,32 +681,35 @@ async def synthesise_and_stream(
         "hi": ("hi",    "hf_alpha"),
         "pt": ("pt-br", "pf_dora"),
     }
-    # Korean has no voice in this kokoro-onnx build — subtitles only until Piper is added
-    KOKORO_UNSUPPORTED = {"ko"}
+    # Telugu has no voice available in either Kokoro or official Piper — subtitles only
+    KOKORO_UNSUPPORTED = {"te"}
 
     if target_lang in KOKORO_UNSUPPORTED:
-        logger.warning(f"TTS not available for '{target_lang}' in this kokoro-onnx version — subtitles only.")
+        logger.warning(f"TTS not yet available for '{target_lang}' — subtitles only.")
         return
 
     kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
 
-    def _generate_chunks():
-        try:
-            samples, sample_rate = kokoro_pipeline.create(
-                translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
-            )
-            
-            chunk_size = 2400
-            for i in range(0, len(samples), chunk_size):
-                yield samples[i : i + chunk_size]
-
-        except Exception as exc:
-            logger.error(f"Kokoro voice synthesis error: {exc}")
+    def _generate():
+        samples, sample_rate = kokoro_pipeline.create(
+            translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
+        )
+        chunk_size = 2400
+        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
+        return chunks, sample_rate
 
     try:
-        chunks = await loop.run_in_executor(None, lambda: list(_generate_chunks()))
+        chunks, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Kokoro executor error: {exc}")
+        return
+
+    # Send the actual sample rate so the client can adapt — same as Piper/Chatterbox.
+    # Without this, a session that previously used Piper (22050 Hz) or Chatterbox
+    # would play Kokoro's 24000 Hz audio at the wrong rate (pitch/speed distortion).
+    try:
+        await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
+    except Exception:
         return
 
     for audio_array in chunks:
@@ -377,6 +726,147 @@ async def synthesise_and_stream(
 
 
 # ---------------------------------------------------------------------------
+# Voice profile management (REST)
+# ---------------------------------------------------------------------------
+MAX_VOICE_SAMPLE_BYTES = 15 * 1024 * 1024  # 15 MB ceiling — a 10-30s WAV clip is well under this
+
+
+@app.post("/api/voice/upload")
+async def upload_voice_sample(file: UploadFile = File(...)):
+    """
+    Accept a short (10-30s) reference audio clip and register it as a voice
+    profile. Returns a voice_id the client passes to /ws/stream to use this
+    cloned voice for TTS playback.
+    """
+    if chatterbox_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Voice cloning is not available — chatterbox-tts is not installed or failed to load.",
+        )
+
+    contents = await file.read()
+    if len(contents) > MAX_VOICE_SAMPLE_BYTES:
+        raise HTTPException(status_code=413, detail="Voice sample too large — keep clips under 15 MB (~30s).")
+    if len(contents) < 1000:
+        raise HTTPException(status_code=400, detail="Voice sample too short or empty.")
+
+    voice_id = str(uuid.uuid4())[:12]
+    raw_ext = os.path.splitext(file.filename or "sample.webm")[1] or ".webm"
+    raw_path = os.path.join(VOICE_SAMPLES_DIR, f"{voice_id}_raw{raw_ext}")
+    wav_path = os.path.join(VOICE_SAMPLES_DIR, f"{voice_id}.wav")
+
+    try:
+        with open(raw_path, "wb") as f:
+            f.write(contents)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save voice sample: {exc}")
+
+    # Convert to WAV — the browser sends WebM/Opus, but Chatterbox's
+    # audio_prompt_path needs a format torchaudio can load reliably.
+    #
+    # torchaudio's WebM/Opus support depends on its ffmpeg backend being
+    # correctly detected, which is unreliable on Windows even with ffmpeg
+    # on PATH. We try torchaudio first, then fall back to soundfile, which
+    # has broader native codec support via libsndfile.
+    loop = asyncio.get_running_loop()
+
+    def _convert_to_wav():
+        # Try PyAV first — FFmpeg-backed, handles WebM/Opus on Windows reliably.
+        # torchaudio's own ffmpeg backend detection is unreliable on Windows even
+        # with ffmpeg on PATH, which is why it keeps failing with "Format not
+        # recognised" — PyAV bundles its own FFmpeg bindings and doesn't have
+        # that detection problem.
+        try:
+            import wave as _wave
+
+            import av
+            import numpy as _np
+
+            container = av.open(raw_path)
+            frames = []
+            sr = None
+            for frame in container.decode(audio=0):
+                if sr is None:
+                    sr = frame.sample_rate
+                arr = frame.to_ndarray()
+                if arr.ndim == 2:
+                    arr = arr.mean(axis=0)
+                frames.append(arr.astype(_np.float32))
+            container.close()
+
+            if not frames or sr is None:
+                raise ValueError("No audio frames decoded")
+
+            audio = _np.concatenate(frames)
+            pcm = (_np.clip(audio, -1.0, 1.0) * 32767).astype(_np.int16)
+
+            with _wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(pcm.tobytes())
+            return
+        except Exception as exc:
+            logger.warning(f"PyAV could not decode voice sample, trying torchaudio: {exc}")
+
+        try:
+            import torchaudio as ta
+            waveform, sr = ta.load(raw_path)
+            ta.save(wav_path, waveform, sr)
+            return
+        except Exception as exc:
+            logger.warning(f"torchaudio could not decode voice sample, trying soundfile: {exc}")
+
+        import soundfile as sf
+        data, sr = sf.read(raw_path)
+        sf.write(wav_path, data, sr)
+
+    try:
+        await loop.run_in_executor(None, _convert_to_wav)
+    except Exception as exc:
+        logger.error(f"Failed to convert voice sample to WAV (tried torchaudio and soundfile): {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not process the audio sample. This is usually an audio codec issue — "
+                "try recording again, or check that ffmpeg is installed and on PATH."
+            ),
+        )
+    finally:
+        # Raw upload is no longer needed once the WAV conversion succeeds
+        if os.path.exists(raw_path):
+            os.remove(raw_path)
+
+    voice_profiles[voice_id] = wav_path
+    logger.info(f"🎙️  Registered new voice profile '{voice_id}' ({len(contents)} bytes) at {wav_path}")
+
+    return {"voice_id": voice_id, "status": "registered"}
+
+
+@app.delete("/api/voice/{voice_id}")
+async def delete_voice_sample(voice_id: str):
+    """Remove a voice profile, its underlying audio file, and any cached conditionals."""
+    path = voice_profiles.pop(voice_id, None)
+    voice_conditionals.pop(voice_id, None)
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception as exc:
+            logger.warning(f"Failed to delete voice sample file {path}: {exc}")
+    return {"voice_id": voice_id, "status": "deleted"}
+
+
+@app.get("/api/voice/status")
+async def voice_cloning_status():
+    """Lets the client check whether voice cloning is available before showing the UI for it."""
+    return {
+        "available": chatterbox_model is not None,
+        "active_profiles": len(voice_profiles),
+        "supported_languages": sorted(CHATTERBOX_LANGUAGES),
+    }
+
+
+# ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
 @app.websocket("/ws/stream")
@@ -387,20 +877,47 @@ async def ws_stream(websocket: WebSocket):
     params = websocket.query_params
     source_lang = params.get("source", "en").lower()
     target_lang = params.get("target", "es").lower()
-    
+    voice_id = params.get("voice_id", "").strip() or None
+
     session_id = str(uuid.uuid4())[:8]
-    state = SessionState(session_id, source_lang, target_lang)
-    logger.info(f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}")
+    state = SessionState(session_id, source_lang, target_lang, voice_id)
+    voice_note = f" | Voice: {voice_id}" if voice_id else " | Voice: preset"
+    logger.info(f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}{voice_note}")
 
-    processing_lock = asyncio.Lock()
+    # Utterance queue — instead of dropping an utterance when the pipeline is
+    # still busy with the previous one, queue each VAD-triggered utterance's
+    # absolute-end byte offset and process them sequentially in a worker task.
+    # This prevents silent phrase drops in fast back-and-forth conversation,
+    # which is especially noticeable over high-latency remote connections.
+    utterance_queue: asyncio.Queue[int] = asyncio.Queue()
+    consumed_bytes = 0
+    worker_started = False
 
-    async def process_utterance():
-        if processing_lock.locked():
-            logger.debug(f"[{session_id}] Pipeline busy — skipping duplicate trigger.")
+    def client_gone() -> bool:
+        try:
+            return websocket.client_state != WebSocketState.CONNECTED
+        except Exception:
+            return True
+
+    async def run_utterance_pipeline(target_abs: int) -> None:
+        nonlocal consumed_bytes
+        if client_gone():
+            logger.info(f"[{session_id}] Client disconnected — skipping queued utterance.")
             return
-        async with processing_lock:
-            raw = state.get_buffer_bytes()
-            state.flush_buffer()
+
+        # target_abs is the absolute buffer offset captured at VAD-trigger time
+        # (consumed_bytes + tell() then). consumed_bytes are the bytes already
+        # removed from the front of the buffer by previous utterances, so the
+        # adjusted length is exactly this utterance's share of the current buffer.
+        state.audio_buffer.seek(0)
+        adjusted = target_abs - consumed_bytes
+        if adjusted <= 0:
+            return
+        raw = state.audio_buffer.read(adjusted)
+        remaining = state.audio_buffer.read()
+        state.audio_buffer = io.BytesIO(remaining)
+        state.audio_buffer.seek(0, io.SEEK_END)
+        consumed_bytes += len(raw)
 
         if not raw:
             return
@@ -412,10 +929,16 @@ async def ws_stream(websocket: WebSocket):
             logger.warning(f"[{session_id}] ⚠️  Audio decode returned None — buffer too short or corrupt. ({len(raw)} bytes)")
             return
 
+        if client_gone():
+            return
+
         logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio via '{state.source_lang}' stream config...")
         original_text = await transcribe(audio, state.source_lang)
         if not original_text:
             logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript.")
+            return
+
+        if client_gone():
             return
 
         logger.info(f"[{session_id}] 🔄 Translating now")
@@ -424,7 +947,35 @@ async def ws_stream(websocket: WebSocket):
             logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
             return
 
-        await synthesise_and_stream(translated_text, websocket, original_text, state.source_lang, state.target_lang)
+        if client_gone():
+            logger.info(f"[{session_id}] Client disconnected before TTS — skipping synthesis.")
+            return
+
+        await synthesise_and_stream(
+            translated_text, websocket, original_text, state.source_lang, state.target_lang, state.voice_id
+        )
+
+    async def utterance_worker() -> None:
+        nonlocal consumed_bytes, worker_started
+        try:
+            while True:
+                target_abs = await utterance_queue.get()
+                if target_abs < 0:  # sentinel — session is over
+                    break
+                await run_utterance_pipeline(target_abs)
+                if len(state.audio_buffer.getvalue()) == 0:
+                    # Buffer fully drained — reset the consumed offset for the
+                    # next conversation segment.
+                    consumed_bytes = 0
+                await asyncio.sleep(0)  # yield back to the event loop
+        finally:
+            worker_started = False
+
+    def ensure_worker() -> None:
+        nonlocal worker_started
+        if not worker_started:
+            worker_started = True
+            asyncio.create_task(utterance_worker())
 
     vad_silence_db: float = VAD_SILENCE_DB
 
@@ -436,11 +987,11 @@ async def ws_stream(websocket: WebSocket):
                 raise WebSocketDisconnect(code=message.get("code", 1000))
 
             # ── Binary audio chunk ─────────────────────────────────────
-            if "bytes" in message and message["bytes"]:
+            if message.get("bytes"):
                 state.append_chunk(message["bytes"])
 
             # ── VAD energy report from browser ─────────────────────────
-            elif "text" in message and message["text"]:
+            elif message.get("text"):
                 try:
                     msg = json.loads(message["text"])
                 except json.JSONDecodeError:
@@ -488,22 +1039,48 @@ async def ws_stream(websocket: WebSocket):
                             )
                             state.has_voice = False
                             state.silence_start = None
-                            asyncio.create_task(process_utterance())
+                            if client_gone():
+                                continue
+                            # Immediate feedback so the browser shows "Processing…".
+                            # The pipeline takes many seconds (Whisper + Ollama +
+                            # TTS) — without this the user sees nothing happen and
+                            # may assume the app is broken and disconnect (exactly
+                            # what happened with the remote user).
+                            try:
+                                await websocket.send_text(json.dumps({
+                                    "type": "processing",
+                                    "queued": utterance_queue.qsize(),
+                                }))
+                            except Exception as exc:
+                                # Client likely went away mid-send; a following
+                                # client_gone() check or the disconnect handler
+                                # will clean up.
+                                logger.debug(f"[{session_id}] Could not send processing notice: {exc}")
+                                continue
+                            # Snapshot the buffer's absolute end offset NOW, at
+                            # trigger time, so the worker only consumes audio up to
+                            # this point. Audio appended after this (start of next
+                            # utterance) stays in the buffer for the next VAD cycle.
+                            trigger_abs = consumed_bytes + state.audio_buffer.tell()
+                            utterance_queue.put_nowait(trigger_abs)
+                            ensure_worker()
 
     except (WebSocketDisconnect, RuntimeError) as exc:
         if isinstance(exc, RuntimeError) and "disconnect" not in str(exc).lower():
-            logger.error(f"[{session_id}] Unexpected error: {exc}", exc_info=True)
+            logger.exception(f"[{session_id}] Unexpected error")
         else:
             logger.info(f"[{session_id}] Client disconnected.")
-        if state.has_voice and len(state.get_buffer_bytes()) > 0:
-            logger.info(f"[{session_id}] Processing final utterance on disconnect.")
-            asyncio.create_task(process_utterance())
-        else:
-            state.flush_buffer()
-    except Exception as exc:
-        logger.error(f"[{session_id}] Unexpected error: {exc}", exc_info=True)
-        state.flush_buffer()
+    except Exception:
+        logger.exception(f"[{session_id}] Unexpected error")
     finally:
+        # Socket is closed — no audio can be delivered, and any queued/in-flight
+        # pipeline will bail out at its next client_gone() checkpoint. Unblock the
+        # worker with a sentinel so it can exit cleanly.
+        while not utterance_queue.empty():
+            utterance_queue.get_nowait()
+        utterance_queue.put_nowait(-1)
+        state.flush_buffer()
+        consumed_bytes = 0
         logger.info(f"[{session_id}] Session closed.")
 
 

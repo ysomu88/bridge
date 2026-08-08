@@ -22,6 +22,7 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 - 🚀 **Streamlined audio pipeline** — Raw Float32 PCM sent directly over WebSocket into NumPy, no container decoding overhead
 - 📝 **Live subtitles** — Source and translation rendered side by side, updating in real time
 - 🔊 **Natural voice output** — Ultra-fast TTS streamed back to your browser
+- 🎙️ **Voice cloning playback** — Optionally hear the translation in *your own voice* from a 15-second sample, instead of a preset voice
 - 💻 **Low VRAM footprint** — Fits comfortably on 8 GB VRAM (tested on RTX 3070 Ti, Windows 11)
 - 🌐 **Remote sharing ready** — Tunnel your pipeline so external users can connect from any browser
 
@@ -45,6 +46,62 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 
 ---
 
+## 🎙️ Voice Cloning Playback
+
+Instead of hearing translations in a preset voice, you can clone your own voice from a short recording and have translations played back as if you said them.
+
+1. Click **Record a 15s sample** in the Playback Voice panel and speak naturally for the full 15 seconds — the recording stops automatically
+2. Once uploaded, check **Use my cloned voice**
+3. Start a session as normal — translated audio now plays back in your own voice
+
+Voice cloning supports a different language list than the rest of Bridge:
+
+Arabic, Danish, German, Greek, English, Spanish, Finnish, French, Hebrew, Hindi, Italian, Japanese, Korean, Malay, Dutch, Norwegian, Polish, Portuguese, Russian, Swedish, Swahili, Turkish, Chinese
+
+If your target language isn't on that list (Telugu, for example), or if cloning fails for any reason mid-session, Bridge falls back automatically to the normal preset voice — translation never stops working.
+
+Recorded voice samples are stored locally in `voice_samples/` and never leave your machine. They are not committed to git.
+
+> For best results, match the language of your reference recording to your most common target language. If they differ, the cloned voice may carry a slight accent from the reference clip's language.
+
+---
+
+## 🧭 How to Use (for new users)
+
+### 1. Set up your language pair
+- The **From** dropdown is the language you'll speak; the **To** dropdown is the language you'll hear back.
+- Use the **⇌** button to swap them instantly.
+
+### 2. Record your voice sample (for cloned voice)
+- Read the sample phrase aloud **naturally, in a quiet room, for at least 10 seconds** (the button auto-stops at 15s).
+- Wait for the status to show **Voice ready ✓**.
+- Make sure **Use my cloned voice** is checked — it auto-checks after recording.
+
+> The sample is used **only for that session** and is deleted when the server shuts down, so you'll re-record each time you connect.
+
+### 3. Start listening
+- Click **▶ Start Listening** — that's the only setup you need. Grant mic access when prompted.
+- The status should show **Listening…**.
+
+### 4. Just speak
+- Bridge listens continuously. As soon as you **pause after a sentence**, it automatically starts translating — **no buttons to press between sentences**.
+- The status changes to **Processing…** while it works.
+- The transcription appears on the left, the translation on the right.
+- You'll hear the translation played back in **your cloned voice**.
+
+### 5. Stop when you're finished
+- Click **⏹ Stop** only when you're done.
+
+### ⏳ About playback delay
+There is an expected **5–20 second delay** between speaking and hearing playback. This is the transcription + translation + voice-cloning pipeline doing its work — **not a bug**. Over a remote connection, latency can make this feel longer. Watch for the **Processing…** status to confirm work is happening.
+
+### ❓ Quick tips
+- If the mic level bar isn't moving, check browser mic permission and that the correct mic is selected.
+- If speech isn't detected, lower the **silence threshold** slider (more negative, e.g. toward -50 dBFS).
+- If you don't hear playback, raise your volume and make sure the tab isn't muted.
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -54,6 +111,8 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 - [Ollama](https://ollama.com) installed locally
 - [eSpeak NG](https://github.com/espeak-ng/espeak-ng/releases/latest) installed (required for non-English voice output)
 - Node.js & npm (for remote tunnel via `winget install OpenJS.NodeJS`)
+
+> Voice cloning is optional and loads automatically if `chatterbox-tts` installs successfully. It adds roughly 2-3 GB VRAM on top of the rest of the stack. If it fails to load, Bridge logs a warning and falls back to preset voices — nothing else breaks.
 
 ### 1. Set up the environment
 
@@ -132,7 +191,7 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 | `start.ps1` | One-click local launch script |
 | `requirements.txt` | Python dependencies |
 | `DOCUMENTATION.md` | Full architecture and technical reference |
-| `TECHNICAL_WALKTHROUGH.md` | Step-by-step explanation of how it works |
+| `voice_samples/` | Locally recorded voice cloning reference clips (gitignored) |
 
 ---
 
@@ -143,6 +202,15 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 
 **No voice output for non-English languages**
 → Install [eSpeak NG](https://github.com/espeak-ng/espeak-ng/releases/latest) (download the `-x64.msi` file and run with default settings), then restart the server.
+
+**"Voice cloning isn't available on this server"**
+→ `chatterbox-tts` failed to install or load. Run `uv pip install chatterbox-tts torchaudio` and check the server startup log for the specific error.
+
+**Cloned voice sounds accented or off**
+→ Normal if your reference recording's language doesn't match your target translation language — see the Voice Cloning section above for accent tips.
+
+**Voice upload fails with "Could not process the audio sample"**
+→ Usually a codec issue converting your browser's recording to WAV. Make sure ffmpeg is installed and on PATH, or try recording again.
 
 **"Ollama not reachable"**
 → Run `ollama serve` in a separate terminal before starting the server.
