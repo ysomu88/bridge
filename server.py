@@ -207,6 +207,20 @@ async def lifespan(app: FastAPI):
 
     os.makedirs(VOICE_SAMPLES_DIR, exist_ok=True)
 
+    # Privacy: a hard kill (crash, Ctrl+C twice, task manager) skips the
+    # graceful shutdown cleanup below, leaving old recordings on disk despite
+    # the "never persists beyond a session" promise. Sweep any leftovers now.
+    stale = os.listdir(VOICE_SAMPLES_DIR)
+    if stale:
+        swept = 0
+        for f in stale:
+            try:
+                os.remove(os.path.join(VOICE_SAMPLES_DIR, f))
+                swept += 1
+            except Exception as exc:
+                logger.warning(f"Could not sweep stale voice sample {f}: {exc}")
+        logger.info(f"🧹 Swept {swept} stale voice sample file(s) from a previous session.")
+
     # ── Ollama connectivity check ───────────────────────────────────────────
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -256,6 +270,8 @@ app = FastAPI(title="Bridge", lifespan=lifespan)
 VAD_SILENCE_DB: float = -40.0       # dBFS below which we call it silence
 VAD_SILENCE_DURATION_S: float = 0.3 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
+MAX_UTTERANCE_S: float = 30.0       # force-process marathon speech (no natural pause) to cap audio_buffer growth
+VAD_SETTLE_S: float = 1.2           # ignore VAD for this long after connect (Start-tap / mic warm-up noise → no phantom first utterance)
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +291,16 @@ class SessionState:
         self.has_voice: bool = False
         self.speech_start: float | None = None
         self.silence_start: float | None = None
+        # Actual AudioContext sample rate the client reported at connect time —
+        # not guaranteed to be CHUNK_SR (16kHz); see the resampling note in
+        # webm_bytes_to_float32. Set by the WS handler right after construction.
+        self.capture_sample_rate: int = self.CHUNK_SR
+        # True while TTS audio is streaming out to this client. During that
+        # window the mic can hear our own output (speakers / weak echo
+        # cancellation), so the VAD handler ignores speech until playback
+        # finishes — otherwise the pipeline would re-trigger on its own echo
+        # and enter a feedback loop.
+        self.tts_playing: bool = False
 
     def append_chunk(self, data: bytes) -> None:
         self.audio_buffer.write(data)
@@ -297,16 +323,33 @@ class SessionState:
 # ---------------------------------------------------------------------------
 # Audio helpers
 # ---------------------------------------------------------------------------
-def webm_bytes_to_float32(raw_bytes: bytes, target_sr: int = 16_000) -> np.ndarray | None:
+def webm_bytes_to_float32(raw_bytes: bytes, source_sr: int = 16_000, target_sr: int = 16_000) -> np.ndarray | None:
     """
-    Directly converts raw incoming PCM Float32 bytes from the browser 
+    Directly converts raw incoming PCM Float32 bytes from the browser
     into a NumPy array, completely bypassing container parsers.
+
+    source_sr is the AudioContext sample rate the client actually captured
+    at (reported at connect time) — not guaranteed to equal target_sr, since
+    several browser/device combinations (iOS Safari in particular) silently
+    ignore the 16kHz hint and hand back their native hardware rate instead.
+    When they differ, resample here so Whisper (which expects 16kHz) doesn't
+    silently receive audio running at the wrong speed.
     """
     if not raw_bytes:
         return None
 
     try:
         audio = np.frombuffer(raw_bytes, dtype=np.float32).copy()
+
+        if source_sr and source_sr != target_sr and len(audio) > 1:
+            duration_s = len(audio) / source_sr
+            new_len = max(1, int(round(duration_s * target_sr)))
+            # Lightweight linear-interpolation resample. Not as clean as a
+            # proper sinc/polyphase resampler, but adds no extra runtime
+            # dependency and is more than adequate quality for STT input.
+            old_idx = np.linspace(0, len(audio) - 1, num=len(audio))
+            new_idx = np.linspace(0, len(audio) - 1, num=new_len)
+            audio = np.interp(new_idx, old_idx, audio).astype(np.float32)
 
         min_samples = int(VAD_MIN_SPEECH_S * target_sr)
         if len(audio) < min_samples:
@@ -403,7 +446,7 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(OLLAMA_URL, json=payload)
             if resp.status_code == 404:
                 logger.error(
@@ -431,6 +474,7 @@ async def _synthesise_piper(
     target_lang: str,
     websocket: WebSocket,
     loop,
+    state: SessionState,
 ) -> None:
     """Synthesise text using Piper and stream raw int16 PCM back to client."""
     import io as _io
@@ -465,15 +509,23 @@ async def _synthesise_piper(
 
     # Stream in chunks
     CHUNK = 4800  # ~100 ms at 22050 Hz (int16 = 2 bytes per sample)
-    for i in range(0, len(pcm_bytes), CHUNK * 2):
-        chunk = pcm_bytes[i : i + CHUNK * 2]
-        if not chunk:
-            continue
-        try:
-            await websocket.send_bytes(chunk)
-        except Exception:
-            logger.warning("WebSocket closed during Piper TTS streaming.")
-            return
+    state.tts_playing = True
+    try:
+        for i in range(0, len(pcm_bytes), CHUNK * 2):
+            chunk = pcm_bytes[i : i + CHUNK * 2]
+            if not chunk:
+                continue
+            try:
+                await websocket.send_bytes(chunk)
+            except Exception:
+                logger.warning("WebSocket closed during Piper TTS streaming.")
+                return
+    finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
+        state.tts_playing = False
 
     logger.info(f"🔊 Piper TTS stream complete ({target_lang}).")
 
@@ -487,6 +539,7 @@ async def _synthesise_chatterbox(
     websocket: WebSocket,
     loop,
     voice_id: str,
+    state: SessionState,
 ) -> None:
     """
     Synthesise text in the user's cloned voice via Chatterbox Multilingual,
@@ -494,36 +547,56 @@ async def _synthesise_chatterbox(
     """
     if chatterbox_model is None:
         logger.warning("Chatterbox not loaded — falling back to preset voice.")
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
 
     ref_path = voice_profiles.get(voice_id)
     if ref_path is None or not os.path.exists(ref_path):
         logger.warning(f"Voice profile '{voice_id}' not found on disk — falling back to preset voice.")
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
 
     if target_lang not in CHATTERBOX_LANGUAGES:
         logger.warning(
             f"Chatterbox does not support '{target_lang}' — falling back to preset voice for this language."
         )
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
 
     def _generate():
-        # Compute the voice embedding once per voice_id and cache it. Chatterbox's
-        # generate() re-runs prepare_conditionals() (librosa load, resample, speaker
-        # embedding, tokenization) on EVERY call when audio_prompt_path is passed —
-        # this was costing 6-9 seconds per translation. Caching the resulting
-        # Conditionals object and swapping model.conds directly skips that entirely
-        # on repeat requests for the same voice.
+        # Cache the voice embedding per voice_id. Chatterbox's generate() re-runs
+        # prepare_conditionals() (librosa load, resample, speaker embedding,
+        # tokenization) on EVERY call when audio_prompt_path is passed — that used
+        # to cost 6-9s per translation. We cache a torch-native serialized snapshot
+        # of the Conditionals and restore it per call instead.
+        #
+        # IMPORTANT: copy.deepcopy() can't be used here — the Conditionals object
+        # holds NON-LEAF autograd tensors, and PyTorch raises "Only Tensors created
+        # explicitly by the user (graph leaves) support the deepcopy protocol".
+        # Conditionals.save()/load() round-trip through torch.save/load, which
+        # serializes arbitrary tensors, so we store the serialized bytes.
         cached = voice_conditionals.get(voice_id)
         if cached is None:
             logger.info(f"[{voice_id}] Conditionals cache MISS — computing embedding...")
             embed_start = time.monotonic()
             chatterbox_model.prepare_conditionals(ref_path, exaggeration=0.5)
-            voice_conditionals[voice_id] = chatterbox_model.conds
+            try:
+                _buf = io.BytesIO()
+                chatterbox_model.conds.save(_buf)
+                voice_conditionals[voice_id] = _buf.getvalue()
+            except Exception as exc:
+                logger.warning(f"[{voice_id}] Could not serialize conditionals for caching: {exc}")
+                voice_conditionals.pop(voice_id, None)
             logger.info(f"[{voice_id}] Embedding computed in {time.monotonic() - embed_start:.1f}s")
         else:
-            logger.info(f"[{voice_id}] Conditionals cache HIT — skipping embedding.")
-            chatterbox_model.conds = cached
+            logger.info(f"[{voice_id}] Conditionals cache HIT — restoring embedding.")
+            try:
+                from chatterbox.mtl_tts import Conditionals  # type: ignore
+                chatterbox_model.conds = Conditionals.load(
+                    io.BytesIO(cached),
+                    map_location=chatterbox_model.device,
+                )
+            except Exception as exc:
+                logger.warning(f"[{voice_id}] Could not restore conditionals from cache ({exc}) — re-deriving.")
+                voice_conditionals.pop(voice_id, None)
+                chatterbox_model.prepare_conditionals(ref_path, exaggeration=0.5)
 
         gen_start = time.monotonic()
         wav_tensor = chatterbox_model.generate(
@@ -542,7 +615,7 @@ async def _synthesise_chatterbox(
             wav_tensor, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Chatterbox synthesis error for voice '{voice_id}': {exc}")
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
 
     logger.info(f"[{voice_id}] Total synthesis (lock + generate): {time.monotonic() - pipeline_start:.1f}s")
 
@@ -559,24 +632,41 @@ async def _synthesise_chatterbox(
     pcm_bytes = pcm_int16.tobytes()
 
     CHUNK = 4800  # ~100-200ms depending on sample rate, 2 bytes/sample
-    for i in range(0, len(pcm_bytes), CHUNK * 2):
-        chunk = pcm_bytes[i : i + CHUNK * 2]
-        if not chunk:
-            continue
-        try:
-            await websocket.send_bytes(chunk)
-        except Exception:
-            logger.warning("WebSocket closed during Chatterbox TTS streaming.")
-            return
+    state.tts_playing = True
+    try:
+        for i in range(0, len(pcm_bytes), CHUNK * 2):
+            chunk = pcm_bytes[i : i + CHUNK * 2]
+            if not chunk:
+                continue
+            try:
+                await websocket.send_bytes(chunk)
+            except Exception:
+                logger.warning("WebSocket closed during Chatterbox TTS streaming.")
+                return
+    finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
+        state.tts_playing = False
 
     logger.info(f"🎙️  Chatterbox cloned-voice TTS stream complete ({target_lang}, voice={voice_id}).")
 
 
-async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket: WebSocket, loop) -> None:
+async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket: WebSocket, loop, state: SessionState) -> None:
     """If cloning fails for any reason, fall back to the normal preset-voice pipeline."""
+    # Surface the fallback to the client so it can switch its voice indicator.
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "voice_fallback",
+            "reason": "Voice cloning failed — using a preset voice instead.",
+        }))
+    except Exception:
+        pass
+
     PIPER_LANGUAGES = {"ko", "de"}
     if target_lang in PIPER_LANGUAGES and target_lang in piper_voices:
-        await _synthesise_piper(text, target_lang, websocket, loop)
+        await _synthesise_piper(text, target_lang, websocket, loop, state)
         return
 
     if kokoro_pipeline is None:
@@ -608,14 +698,22 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
     except Exception:
         return
 
-    for audio_array in chunks:
-        if audio_array is None or len(audio_array) == 0:
-            continue
-        pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
-        try:
-            await websocket.send_bytes(pcm_int16.tobytes())
-        except Exception:
-            return
+    state.tts_playing = True
+    try:
+        for audio_array in chunks:
+            if audio_array is None or len(audio_array) == 0:
+                continue
+            pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+            try:
+                await websocket.send_bytes(pcm_int16.tobytes())
+            except Exception:
+                return
+    finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
+        state.tts_playing = False
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +725,7 @@ async def synthesise_and_stream(
     original_text: str,
     source_lang: str,
     target_lang: str,
+    state: SessionState,
     session_voice_id: str | None = None,
 ) -> None:
     """Synthesise target text and stream PCM bytes back to client with layout routing indicators."""
@@ -650,7 +749,7 @@ async def synthesise_and_stream(
 
     # ── Route to a cloned voice via Chatterbox if this session has one ──
     if session_voice_id and session_voice_id in voice_profiles:
-        await _synthesise_chatterbox(translated_text, target_lang, websocket, loop, session_voice_id)
+        await _synthesise_chatterbox(translated_text, target_lang, websocket, loop, session_voice_id, state)
         return
 
     # ── Route to Piper for languages Kokoro doesn't support ─────────────
@@ -663,7 +762,7 @@ async def synthesise_and_stream(
                 f"Download the voice files and place them in piper_voices/."
             )
             return
-        await _synthesise_piper(translated_text, target_lang, websocket, loop)
+        await _synthesise_piper(translated_text, target_lang, websocket, loop, state)
         return
 
     if kokoro_pipeline is None:
@@ -712,15 +811,23 @@ async def synthesise_and_stream(
     except Exception:
         return
 
-    for audio_array in chunks:
-        if audio_array is None or len(audio_array) == 0:
-            continue
-        pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
-        try:
-            await websocket.send_bytes(pcm_int16.tobytes())
-        except Exception:
-            logger.warning("WebSocket closed during TTS streaming.")
-            return
+    state.tts_playing = True
+    try:
+        for audio_array in chunks:
+            if audio_array is None or len(audio_array) == 0:
+                continue
+            pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+            try:
+                await websocket.send_bytes(pcm_int16.tobytes())
+            except Exception:
+                logger.warning("WebSocket closed during TTS streaming.")
+                return
+    finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
+        state.tts_playing = False
 
     logger.info("🔊 TTS stream complete.")
 
@@ -729,6 +836,35 @@ async def synthesise_and_stream(
 # Voice profile management (REST)
 # ---------------------------------------------------------------------------
 MAX_VOICE_SAMPLE_BYTES = 15 * 1024 * 1024  # 15 MB ceiling — a 10-30s WAV clip is well under this
+
+# Magic-byte signatures for containers we might plausibly receive. The browser
+# always sends WebM (EBML header), but the endpoint accepts any file up to the
+# size cap — checking this first keeps arbitrary uploads from reaching PyAV/
+# torchaudio/soundfile, which is real attack surface for an untrusted decoder.
+_AUDIO_MAGIC_SIGNATURES = (
+    b"\x1a\x45\xdf\xa3",  # WebM / Matroska (EBML header) — what browsers send
+    b"RIFF",              # WAV
+    b"OggS",              # OGG (Vorbis/Opus)
+    b"fLaC",              # FLAC
+    b"ID3",                # MP3 with ID3 tag
+)
+
+
+def _looks_like_audio(contents: bytes) -> bool:
+    head = contents[:16]
+    if head.startswith(_AUDIO_MAGIC_SIGNATURES):
+        return True
+    # MP4/M4A (ISO-BMFF) — what Safari's MediaRecorder actually produces,
+    # since it doesn't support the WebM container at all. The file starts
+    # with a 4-byte box size followed by an "ftyp" box type, e.g.
+    # [00 00 00 20] [f t y p] [i s o m] ... — check the type field directly
+    # rather than the leading size bytes, which vary.
+    if len(contents) >= 8 and contents[4:8] == b"ftyp":
+        return True
+    # Bare MP3 frame sync (no ID3 tag): 0xFFEx / 0xFFFx
+    if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
+        return True
+    return False
 
 
 @app.post("/api/voice/upload")
@@ -749,6 +885,8 @@ async def upload_voice_sample(file: UploadFile = File(...)):
         raise HTTPException(status_code=413, detail="Voice sample too large — keep clips under 15 MB (~30s).")
     if len(contents) < 1000:
         raise HTTPException(status_code=400, detail="Voice sample too short or empty.")
+    if not _looks_like_audio(contents):
+        raise HTTPException(status_code=400, detail="File doesn't look like a recognised audio format.")
 
     voice_id = str(uuid.uuid4())[:12]
     raw_ext = os.path.splitext(file.filename or "sample.webm")[1] or ".webm"
@@ -869,8 +1007,45 @@ async def voice_cloning_status():
 # ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
+def _origin_allowed(websocket: WebSocket) -> bool:
+    """
+    Reject cross-origin WebSocket handshakes so an arbitrary web page can't
+    drive-by open a connection to this server and trigger GPU work (Whisper +
+    Ollama + TTS) on someone's behalf.
+
+    - No Origin header at all (non-browser clients: curl, native apps) is
+      allowed, since only browsers send it.
+    - Otherwise the Origin's host must match the Host this socket was opened
+      against — covers both direct localhost access and reverse-proxy tunnels
+      like loca.lt, which forward the Host header transparently.
+    - Extra origins can be allowlisted via the BRIDGE_ALLOWED_ORIGINS env var
+      (comma-separated), for setups where Host doesn't line up with Origin.
+    """
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True
+
+    allowed_extra = {
+        o.strip() for o in os.environ.get("BRIDGE_ALLOWED_ORIGINS", "").split(",") if o.strip()
+    }
+    if origin in allowed_extra:
+        return True
+
+    host = websocket.headers.get("host", "")
+    origin_host = origin.split("://", 1)[-1]
+    return origin_host == host
+
+
 @app.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket):
+    if not _origin_allowed(websocket):
+        logger.warning(
+            f"Rejected WebSocket — Origin '{websocket.headers.get('origin')}' "
+            f"does not match Host '{websocket.headers.get('host')}'."
+        )
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     
     # Extract structural routing values directly from initialization queries
@@ -879,10 +1054,42 @@ async def ws_stream(websocket: WebSocket):
     target_lang = params.get("target", "es").lower()
     voice_id = params.get("voice_id", "").strip() or None
 
+    # The client reports the AudioContext sample rate it actually got, since
+    # many devices (iOS Safari, some Firefox/Android combos) don't honor the
+    # 16kHz hint and silently hand back their native hardware rate instead
+    # (commonly 48000 or 44100). Feeding that straight to Whisper as if it
+    # were 16kHz would silently mistranscribe speech at the wrong speed.
+    try:
+        capture_sample_rate = int(float(params.get("sample_rate", "16000")))
+    except (TypeError, ValueError):
+        capture_sample_rate = 16_000
+    if not (8_000 <= capture_sample_rate <= 96_000):
+        logger.warning(f"Ignoring implausible reported sample_rate={capture_sample_rate}, defaulting to 16000.")
+        capture_sample_rate = 16_000
+
     session_id = str(uuid.uuid4())[:8]
     state = SessionState(session_id, source_lang, target_lang, voice_id)
+    state.capture_sample_rate = capture_sample_rate
     voice_note = f" | Voice: {voice_id}" if voice_id else " | Voice: preset"
-    logger.info(f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}{voice_note}")
+    logger.info(
+        f"[{session_id}] Client connected. Pipeline Route: {source_lang.upper()} -> {target_lang.upper()}"
+        f"{voice_note} | Capture rate: {capture_sample_rate} Hz"
+    )
+
+    # Tell the client which voice route was actually selected so the UI can
+    # show "Your voice" vs "Preset" instead of leaving the user guessing.
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "session_init",
+            "voice": voice_id if (voice_id and voice_id in voice_profiles) else None,
+            "sample_rate": capture_sample_rate,
+        }))
+    except Exception:
+        pass
+
+    # Warm-up guard: ignore VAD for the first moments after connect so the
+    # Start-tap / mic-engage noise can't launch a phantom first utterance.
+    vad_armed_at: float = time.monotonic() + VAD_SETTLE_S
 
     # Utterance queue — instead of dropping an utterance when the pipeline is
     # still busy with the previous one, queue each VAD-triggered utterance's
@@ -905,55 +1112,66 @@ async def ws_stream(websocket: WebSocket):
             logger.info(f"[{session_id}] Client disconnected — skipping queued utterance.")
             return
 
-        # target_abs is the absolute buffer offset captured at VAD-trigger time
-        # (consumed_bytes + tell() then). consumed_bytes are the bytes already
-        # removed from the front of the buffer by previous utterances, so the
-        # adjusted length is exactly this utterance's share of the current buffer.
-        state.audio_buffer.seek(0)
-        adjusted = target_abs - consumed_bytes
-        if adjusted <= 0:
-            return
-        raw = state.audio_buffer.read(adjusted)
-        remaining = state.audio_buffer.read()
-        state.audio_buffer = io.BytesIO(remaining)
-        state.audio_buffer.seek(0, io.SEEK_END)
-        consumed_bytes += len(raw)
+        try:
+            # target_abs is the absolute buffer offset captured at VAD-trigger time
+            # (consumed_bytes + tell() then). consumed_bytes are the bytes already
+            # removed from the front of the buffer by previous utterances, so the
+            # adjusted length is exactly this utterance's share of the current buffer.
+            state.audio_buffer.seek(0)
+            adjusted = target_abs - consumed_bytes
+            if adjusted <= 0:
+                return
+            raw = state.audio_buffer.read(adjusted)
+            remaining = state.audio_buffer.read()
+            state.audio_buffer = io.BytesIO(remaining)
+            state.audio_buffer.seek(0, io.SEEK_END)
+            consumed_bytes += len(raw)
 
-        if not raw:
-            return
+            if not raw:
+                return
 
-        loop = asyncio.get_running_loop()
-        logger.info(f"[{session_id}] 🔄 Decoding {len(raw)} bytes of audio...")
-        audio = await loop.run_in_executor(None, webm_bytes_to_float32, raw)
-        if audio is None:
-            logger.warning(f"[{session_id}] ⚠️  Audio decode returned None — buffer too short or corrupt. ({len(raw)} bytes)")
-            return
+            loop = asyncio.get_running_loop()
+            logger.info(f"[{session_id}] 🔄 Decoding {len(raw)} bytes of audio...")
+            audio = await loop.run_in_executor(None, webm_bytes_to_float32, raw, state.capture_sample_rate)
+            if audio is None:
+                logger.warning(f"[{session_id}] ⚠️  Audio decode returned None — buffer too short or corrupt. ({len(raw)} bytes)")
+                return
 
-        if client_gone():
-            return
+            if client_gone():
+                return
 
-        logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio via '{state.source_lang}' stream config...")
-        original_text = await transcribe(audio, state.source_lang)
-        if not original_text:
-            logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript.")
-            return
+            logger.info(f"[{session_id}] 🔄 Transcribing {len(audio)/16000:.1f}s of audio via '{state.source_lang}' stream config...")
+            original_text = await transcribe(audio, state.source_lang)
+            if not original_text:
+                logger.warning(f"[{session_id}] ⚠️  Whisper returned empty transcript.")
+                return
 
-        if client_gone():
-            return
+            if client_gone():
+                return
 
-        logger.info(f"[{session_id}] 🔄 Translating now")
-        translated_text = await translate_text(original_text, state.source_lang, state.target_lang)
-        if not translated_text:
-            logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
-            return
+            logger.info(f"[{session_id}] 🔄 Translating now")
+            translated_text = await translate_text(original_text, state.source_lang, state.target_lang)
+            if not translated_text:
+                logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
+                return
 
-        if client_gone():
-            logger.info(f"[{session_id}] Client disconnected before TTS — skipping synthesis.")
-            return
+            if client_gone():
+                logger.info(f"[{session_id}] Client disconnected before TTS — skipping synthesis.")
+                return
 
-        await synthesise_and_stream(
-            translated_text, websocket, original_text, state.source_lang, state.target_lang, state.voice_id
-        )
+            await synthesise_and_stream(
+                translated_text, websocket, original_text, state.source_lang, state.target_lang, state, state.voice_id
+            )
+        finally:
+            # Whatever happened above (success, empty transcript, translation
+            # failure, decode error) — tell the client this utterance is done
+            # so its status bar doesn't stay stuck on "Processing…" until the
+            # next utterance happens to start.
+            if not client_gone():
+                try:
+                    await websocket.send_text(json.dumps({"type": "processing_done"}))
+                except Exception:
+                    pass
 
     async def utterance_worker() -> None:
         nonlocal consumed_bytes, worker_started
@@ -1005,6 +1223,21 @@ async def ws_stream(websocket: WebSocket):
                     logger.info(f"[{session_id}] Silence threshold updated to {vad_silence_db:.1f} dBFS")
                     continue
 
+                if msg_type == "set_voice":
+                    # Mid-session voice enrollment: a clone may finish uploading
+                    # after the socket already connected without a voice_id.
+                    new_voice_id = (msg.get("voice_id") or "").strip() or None
+                    if new_voice_id is not None and new_voice_id in voice_profiles:
+                        state.voice_id = new_voice_id
+                        logger.info(f"[{session_id}] 🎙️ Voice updated mid-session → {new_voice_id}")
+                        try:
+                            await websocket.send_text(json.dumps({"type": "voice_update", "voice": new_voice_id}))
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(f"[{session_id}] set_voice rejected — unknown or empty voice_id {new_voice_id!r}")
+                    continue
+
                 if msg_type != "vad":
                     continue
 
@@ -1014,10 +1247,51 @@ async def ws_stream(websocket: WebSocket):
 
                 logger.debug(f"[{session_id}] VAD {db:.1f} dBFS {'🗣' if is_speech else '🔇'}")
 
-                try:
-                    await websocket.send_text(json.dumps({"type": "vad_echo", "db": db}))
-                except Exception:
-                    pass
+                # Capture settle window: for the first moments after connect the
+                # mic catches Start-tap / warm-up noise that could otherwise
+                # launch a phantom first utterance. Ignore VAD until it settles.
+                if time.monotonic() < vad_armed_at:
+                    continue
+
+                # Speaker-feedback guard: while our own TTS is streaming to this
+                # client, that audio can loop back into the mic through speakers
+                # with weak echo cancellation. Ignore VAD entirely during playback
+                # so the pipeline can't re-harvest its own output and enter a
+                # feedback loop. Audio keeps buffering regardless — speech that
+                # starts after playback resumes is handled normally.
+                if state.tts_playing:
+                    continue
+
+                async def trigger_utterance() -> bool:
+                    """Snapshot the buffer end offset and queue it for processing.
+                    Returns False if the client is gone or the send failed."""
+                    if client_gone():
+                        return False
+                    # Immediate feedback so the browser shows "Processing…".
+                    # The pipeline takes many seconds (Whisper + Ollama + TTS) —
+                    # without this the user sees nothing happen and may assume
+                    # the app is broken and disconnect (exactly what happened
+                    # with the remote user).
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "processing",
+                            "queued": utterance_queue.qsize(),
+                        }))
+                    except Exception as exc:
+                        # Client likely went away mid-send; a following
+                        # client_gone() check or the disconnect handler
+                        # will clean up.
+                        logger.debug(f"[{session_id}] Could not send processing notice: {exc}")
+                        return False
+                    # Snapshot the buffer's absolute end offset NOW, at trigger
+                    # time, so the worker only consumes audio up to this point.
+                    # Audio appended after this (start of the next utterance,
+                    # or the continuation of marathon speech) stays in the
+                    # buffer for the next VAD cycle.
+                    trigger_abs = consumed_bytes + state.audio_buffer.tell()
+                    utterance_queue.put_nowait(trigger_abs)
+                    ensure_worker()
+                    return True
 
                 if is_speech:
                     if not state.has_voice:
@@ -1025,6 +1299,18 @@ async def ws_stream(websocket: WebSocket):
                         state.speech_start = now
                     state.has_voice = True
                     state.silence_start = None
+
+                    # Force-flush marathon speech (no natural pause) so
+                    # audio_buffer can't grow unboundedly for the length of the
+                    # session. The user is still mid-sentence, so we keep
+                    # has_voice True and just start timing a fresh segment.
+                    if state.speech_duration_s() >= MAX_UTTERANCE_S:
+                        logger.info(
+                            f"[{session_id}] ⏱  {MAX_UTTERANCE_S:.0f}s of continuous speech "
+                            f"reached — force-processing to cap buffer growth."
+                        )
+                        if await trigger_utterance():
+                            state.speech_start = now
                 else:
                     if state.has_voice:
                         if state.silence_start is None:
@@ -1039,31 +1325,7 @@ async def ws_stream(websocket: WebSocket):
                             )
                             state.has_voice = False
                             state.silence_start = None
-                            if client_gone():
-                                continue
-                            # Immediate feedback so the browser shows "Processing…".
-                            # The pipeline takes many seconds (Whisper + Ollama +
-                            # TTS) — without this the user sees nothing happen and
-                            # may assume the app is broken and disconnect (exactly
-                            # what happened with the remote user).
-                            try:
-                                await websocket.send_text(json.dumps({
-                                    "type": "processing",
-                                    "queued": utterance_queue.qsize(),
-                                }))
-                            except Exception as exc:
-                                # Client likely went away mid-send; a following
-                                # client_gone() check or the disconnect handler
-                                # will clean up.
-                                logger.debug(f"[{session_id}] Could not send processing notice: {exc}")
-                                continue
-                            # Snapshot the buffer's absolute end offset NOW, at
-                            # trigger time, so the worker only consumes audio up to
-                            # this point. Audio appended after this (start of next
-                            # utterance) stays in the buffer for the next VAD cycle.
-                            trigger_abs = consumed_bytes + state.audio_buffer.tell()
-                            utterance_queue.put_nowait(trigger_abs)
-                            ensure_worker()
+                            await trigger_utterance()
 
     except (WebSocketDisconnect, RuntimeError) as exc:
         if isinstance(exc, RuntimeError) and "disconnect" not in str(exc).lower():
@@ -1089,8 +1351,9 @@ async def ws_stream(websocket: WebSocket):
 # ---------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def root():
+    index_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     try:
-        with open("index.html", "r", encoding="utf-8") as f:
+        with open(index_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>index.html not found</h1>", status_code=404)

@@ -125,6 +125,11 @@
     .dot.error      { background: var(--red); }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
     #status-label { font-weight: 600; color: var(--text-hi); }
+    .voice-route {
+      font-size: 0.72rem; font-weight: 600; color: var(--text-lo);
+      white-space: nowrap; font-variant-numeric: tabular-nums;
+    }
+    .voice-route.cloned { color: var(--green); }
 
     /* ── Controls ── */
     .controls {
@@ -400,7 +405,8 @@
       </ol>
       <p class="onboard-note">
         ⏳ <strong>Expect a 5–20s delay</strong> between speaking and playback — that's the translation + voice-cloning pipeline working, not a bug.
-        Voice samples are stored locally and deleted on shutdown (privacy first).
+        Voice samples are stored locally and deleted on shutdown (privacy first), so re-record whenever you connect from a new session, browser, or device.
+        🎙️ Bridge translates <strong>anything the mic hears</strong> in the source language — nearby speech will be picked up too.
       </p>
     </div>
   </div>
@@ -431,7 +437,8 @@
 
     <p class="voice-hint" id="voice-hint">
       Speak naturally for at least 10 seconds in a quiet room. This clip is used to clone your
-      voice locally — nothing leaves your machine.
+      voice locally — nothing leaves your machine. You can press ▶ Start Listening before the
+      upload finishes — Bridge switches to your voice the moment it's ready.
     </p>
   </div>
 
@@ -440,7 +447,10 @@
       <div class="dot" id="status-dot"></div>
       <span id="status-label">Disconnected</span>
     </div>
-    <span id="chunk-count" style="font-size:0.72rem;">0 chunks sent</span>
+    <div style="display:flex;align-items:center;gap:0.75rem;">
+      <span id="voice-route" class="voice-route">🗣️ Preset</span>
+      <span id="chunk-count" style="font-size:0.72rem;">0 chunks sent</span>
+    </div>
   </div>
 
   <div class="controls">
@@ -525,6 +535,21 @@
     const btnRecordVoice     = document.getElementById("btn-record-voice");
     const voiceStatusText    = document.getElementById("voice-status-text");
     const voiceHint          = document.getElementById("voice-hint");
+    const voiceRoute         = document.getElementById("voice-route");
+    let voiceFallbackNotified = false;
+
+    // ── Playback voice indicator ────────────────────────────────────────
+    function setVoiceRoute(voiceId) {
+      if (voiceId) {
+        voiceRoute.textContent = "🎙️ Your voice";
+        voiceRoute.classList.add("cloned");
+        voiceRoute.title = "Playback uses this session's cloned voice.";
+      } else {
+        voiceRoute.textContent = "🗣️ Preset";
+        voiceRoute.classList.remove("cloned");
+        voiceRoute.title = "Playback uses a preset voice.";
+      }
+    }
 
     // ── Language metadata ─────────────────────────────────────────────
     const LANGUAGES = {
@@ -545,6 +570,7 @@
     let ws            = null;
     let micStream     = null;
     let totalChunks   = 0;
+    let micFeeding    = false;  // true once the first mic chunk has reached the server
 
     let audioCtx      = null;
     let scriptNode    = null;
@@ -620,6 +646,7 @@
     const STATES = {
       disconnected: { label: "Disconnected", cls: "" },
       connected:    { label: "Connected",    cls: "connected" },
+      starting:     { label: "Starting mic…", cls: "listening" },
       listening:    { label: "Listening…",   cls: "listening" },
       speaking:     { label: "Speaking…",    cls: "speaking" },
       processing:   { label: "Processing…",  cls: "processing" },
@@ -683,9 +710,30 @@
       }
 
       voiceRecordedChunks = [];
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus" : "audio/webm";
-      voiceMediaRecorder = new MediaRecorder(voiceRecordStream, { mimeType });
+      // Safari (iOS and macOS) doesn't support the WebM container for
+      // MediaRecorder at all — not "picks a plain codec", it throws
+      // NotSupportedError outright. Try formats in order of preference and
+      // fall back gracefully instead of assuming WebM works everywhere.
+      const MIME_CANDIDATES = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4;codecs=mp4a.40.2", // Safari (iOS/macOS)
+        "audio/mp4",
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType = MIME_CANDIDATES.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+
+      try {
+        voiceMediaRecorder = mimeType
+          ? new MediaRecorder(voiceRecordStream, { mimeType })
+          : new MediaRecorder(voiceRecordStream); // let the browser pick as a last resort
+      } catch (err) {
+        console.error("[VOICE] MediaRecorder init failed:", err);
+        voiceStatusText.textContent = "Recording not supported in this browser";
+        voiceRecordStream.getTracks().forEach((t) => t.stop());
+        voiceRecordStream = null;
+        return;
+      }
 
       voiceMediaRecorder.ondataavailable = (evt) => {
         if (evt.data && evt.data.size > 0) voiceRecordedChunks.push(evt.data);
@@ -698,7 +746,7 @@
         btnRecordVoice.textContent = "🎙️ Record a 15s sample";
         voiceStatusText.textContent = "Uploading…";
 
-        const blob = new Blob(voiceRecordedChunks, { type: mimeType });
+        const blob = new Blob(voiceRecordedChunks, { type: voiceMediaRecorder.mimeType || mimeType });
         await uploadVoiceSample(blob);
       };
 
@@ -723,11 +771,26 @@
     }
 
     async function uploadVoiceSample(blob) {
+      // Guard against failed/silent recordings before spending a slow link
+      // (cellular / tunnel) on an upload that can't possibly succeed.
+      if (!blob || blob.size < 4096) {
+        console.warn("[VOICE] Recording came back empty or too small:", blob && blob.size);
+        voiceStatusText.textContent = "No audio captured — try again";
+        voiceStatusText.className = "voice-status-text";
+        registeredVoiceId = null;
+        return;
+      }
+
       const formData = new FormData();
       formData.append("file", blob, "voice_sample.webm");
 
+      // Slow links can make the upload take a while — fail with a clear
+      // message instead of hanging on "Uploading…" forever.
+      const controller = new AbortController();
+      const uploadTimeout = setTimeout(() => controller.abort(), 45000);
+
       try {
-        const resp = await fetch("/api/voice/upload", { method: "POST", body: formData });
+        const resp = await fetch("/api/voice/upload", { method: "POST", body: formData, signal: controller.signal });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
           throw new Error(err.detail || `HTTP ${resp.status}`);
@@ -740,11 +803,19 @@
         useClonedVoiceBox.disabled = false;
         useClonedVoiceBox.checked = true;
         console.log(`[VOICE] Registered voice profile: ${registeredVoiceId}`);
+
+        // If a session is already running, enroll the clone mid-session so the
+        // next utterance uses it instead of staying on the preset voice.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "set_voice", voice_id: registeredVoiceId }));
+        }
       } catch (err) {
         console.error("[VOICE] Upload failed:", err);
         voiceStatusText.textContent = "Upload failed";
         voiceStatusText.className = "voice-status-text";
         registeredVoiceId = null;
+      } finally {
+        clearTimeout(uploadTimeout);
       }
     }
 
@@ -779,10 +850,14 @@
       const float32  = new Float32Array(int16Arr.length);
       for (let i = 0; i < int16Arr.length; i++) float32[i] = int16Arr[i] / 32768.0;
 
-      // Create the buffer at the AudioContext's ACTUAL sample rate — Piper
-      // outputs at 22050 Hz and Chatterbox varies, so hardcoding SAMPLE_RATE
-      // here caused pitch/speed distortion after a tts_config rate change.
-      const buffer = playbackCtx.createBuffer(1, float32.length, playbackCtx.sampleRate);
+      // Create the buffer at the DATA's sample rate (currentSampleRate), not the
+      // context's. Some browsers/devices (iOS Safari in particular) silently
+      // ignore the AudioContext sampleRate option and always run at the hardware
+      // rate (commonly 44100/48000) — labeling Piper/Chatterbox/Kokoro data at
+      // that rate would play it back ~2x too fast (chipmunk). Declaring the
+      // correct data rate lets the browser resample to the context's output rate
+      // automatically; on desktop the two rates are equal, so this is a no-op.
+      const buffer = playbackCtx.createBuffer(1, float32.length, currentSampleRate);
       buffer.copyToChannel(float32, 0);
 
       const source = playbackCtx.createBufferSource();
@@ -799,11 +874,19 @@
       const proto = location.protocol === "https:" ? "wss" : "ws";
       const useVoice = useClonedVoiceBox.checked && registeredVoiceId;
       const voiceParam = useVoice ? `&voice_id=${encodeURIComponent(registeredVoiceId)}` : "";
-      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${getSource()}&target=${getTarget()}${voiceParam}`);
+      // Browsers/devices are NOT guaranteed to honor the `sampleRate: 16000`
+      // hint passed to AudioContext — many (iOS Safari, some Firefox/Android
+      // combos) silently hand back their native hardware rate (commonly
+      // 48000 or 44100) instead. Tell the server what we actually got so it
+      // can resample correctly rather than assuming 16000 and silently
+      // mistranscribing audio that's really running 2-3x too fast/slow.
+      const actualSampleRate = audioCtx.sampleRate;
+      ws = new WebSocket(`${proto}://${location.host}/ws/stream?source=${getSource()}&target=${getTarget()}&sample_rate=${actualSampleRate}${voiceParam}`);
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
-        setStatus("listening");
+        // "Listening…" is claimed by the first microphone chunk (see
+        // onaudioprocess); until then the "Starting mic…" state is honest.
         ws.send(JSON.stringify({ type: "set_threshold", db: silenceThresholdDb }));
       };
 
@@ -820,8 +903,8 @@
               const q = msg.queued ? ` · ${msg.queued} queued` : "";
               setStatus("processing");
               statusLabel.textContent = `Processing…${q}`;
-              // Clear the label back to "Listening…" once done — the next
-              // vad_echo/subtitle/audio message will also reset it.
+              // Server sends "processing_done" below once this utterance's
+              // pipeline finishes (success or failure) to reset the label.
               if (playbackCtx) playbackCtx.resume().catch(() => {});
             } else if (msg.type === "processing_done") {
               setStatus("listening");
@@ -835,6 +918,22 @@
                 }
                 playbackCtx = new AudioContext({ sampleRate: currentSampleRate });
                 nextPlayTime = 0;
+                // This recreate happens outside any user gesture (it's driven
+                // by a server message), so the fresh context can start
+                // "suspended" — resume as a best effort so the next stream
+                // isn't silent.
+                playbackCtx.resume().catch(() => {});
+              }
+            } else if (msg.type === "session_init" || msg.type === "voice_update") {
+              // Reflect which voice the server is actually using for playback.
+              setVoiceRoute(msg.voice ? msg.voice : null);
+            } else if (msg.type === "voice_fallback") {
+              setVoiceRoute(null);
+              if (!voiceFallbackNotified) {
+                voiceFallbackNotified = true;
+                voiceRoute.textContent = "🗣️ Preset (clone failed)";
+                voiceRoute.title = msg.reason || "Voice cloning failed — using a preset voice.";
+                console.warn("[VOICE] Falling back to preset voice:", msg.reason || "");
               }
             }
           } catch (e) {
@@ -852,17 +951,39 @@
 
     // ── Audio Processing & Pipeline ───────────────────────────────────
     async function startCapture() {
-      // Create the AudioContext FIRST, while we still have the user-gesture
-      // context from the button click. Creating it after an `await` (e.g.
-      // getUserMedia) loses that context, and Chrome's autoplay policy then
-      // starts the context in a "suspended" state — onaudioprocess never
+      // Create BOTH audio contexts synchronously at the top of this click
+      // handler — inside the user gesture, before any await — so the browser
+      // can't autoplay-block them, and their (comparatively slow on iOS)
+      // setup cost overlaps the mic permission prompt instead of adding to it.
+      if (!playbackCtx || playbackCtx.state === "closed") {
+        playbackCtx = new AudioContext({ sampleRate: currentSampleRate });
+        nextPlayTime = 0;
+      }
+      if (playbackCtx.state === "suspended") {
+        playbackCtx.resume().catch(() => {});
+      }
+
+      // Create the capture context, still inside the gesture. Creating it
+      // after an `await` (e.g. getUserMedia) loses that context, and Chrome's
+      // autoplay policy then starts it "suspended" — onaudioprocess never
       // fires, so no audio chunks are ever sent.
+      setStatus("starting");
       try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        try {
+          audioCtx = new AudioCtor({ sampleRate: 16000 });
+        } catch (rateErr) {
+          // Some WebKit versions throw on an explicit sampleRate constraint
+          // rather than just ignoring it. Retry with the device's default
+          // rate — the server resamples based on whatever we report back,
+          // so this doesn't need to be exactly 16000 to work correctly.
+          console.warn("[AUDIO] 16kHz AudioContext rejected, falling back to device default:", rateErr);
+          audioCtx = new AudioCtor();
+        }
         if (audioCtx.state === "suspended") {
           await audioCtx.resume();
         }
-        console.log("[AUDIO] AudioContext state:", audioCtx.state);
+        console.log("[AUDIO] AudioContext state:", audioCtx.state, "| sampleRate:", audioCtx.sampleRate);
       } catch (err) {
         console.error("[AUDIO] AudioContext init failed:", err);
         setStatus("error");
@@ -940,13 +1061,24 @@
           ws.send(dataCopy.buffer);
           ws.send(JSON.stringify({ type: "vad", db: parseFloat(db.toFixed(2)) }));
           chunkCount.textContent = `${++totalChunks} buffers sent`;
+          // Mic confirmed live — only now claim "Listening…".
+          if (!micFeeding) { micFeeding = true; setStatus("listening"); }
         } catch (e) {
           console.error("[WS] Send failed:", e);
         }
       };
 
       micSource.connect(scriptNode);
-      scriptNode.connect(audioCtx.destination);
+      // ScriptProcessorNode.onaudioprocess only fires while the node has a
+      // live path to the destination — but connecting it directly plays the
+      // user's raw, unprocessed mic input out their speakers, which causes
+      // audible self-echo and mic feedback for anyone not on headphones.
+      // Route through a silent gain node instead: keeps the graph "alive"
+      // without any audible output.
+      const silentSink = audioCtx.createGain();
+      silentSink.gain.value = 0;
+      scriptNode.connect(silentSink);
+      silentSink.connect(audioCtx.destination);
 
       btnStart.disabled = true;
       btnStop.disabled  = false;
@@ -971,6 +1103,9 @@
       chunkCount.textContent = "0 chunks sent";
       setSelectorsDisabled(false);
       setStatus("disconnected");
+      micFeeding = false;
+      setVoiceRoute(null);
+      voiceFallbackNotified = false;
       resetSubtitles();
       levelFill.style.width = "0%";
       dbReadout.textContent = "— dBFS";
