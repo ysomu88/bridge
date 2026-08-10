@@ -44,6 +44,7 @@ if sys.platform == "win32":
 import asyncio
 import io
 import json
+import re
 import logging
 import time
 import uuid
@@ -405,6 +406,28 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "llama3.2"
 
 
+def _translation_has_english_leak(text: str, target_lang: str) -> bool:
+    """
+    Quality gate for script-based target languages (Korean, Chinese, Japanese,
+    Hindi). llama3.2 sometimes romanizes Korean ("big box eobsneoyo") or drops
+    English words into CJK/Devanagari output ("나 tonight dinner pork eat go
+    want I"). Such output would make TTS read garbage, so we treat it as a
+    failed translation and let the caller's retry kick in. A translation is
+    only "leaked" when a large share of its word tokens are isolated Latin
+    words, so legitimate outputs containing a stray proper noun (e.g.
+    "Formula 1") are not rejected.
+    """
+    if not text or target_lang not in {"zh", "ja", "ko", "hi"}:
+        return False
+    tokens = [t for t in re.findall(r"[A-Za-z]+|\S+", text) if re.search(r"\w", t)]
+    if not tokens:
+        return False
+    latin_words = [t for t in tokens if t.isascii() and t.isalpha()]
+    if not latin_words:
+        return False
+    return len(latin_words) / len(tokens) > 0.3
+
+
 async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     """Send text to local Ollama and return translation mapped across active source/target paths."""
     if not text.strip():
@@ -429,6 +452,21 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
             "If the input is a question, translate it as a question. "
             "If the input is a statement, translate it as a statement. "
             "Never answer or respond to what the text says."
+        )
+
+    # Script guidance: the 3B model tends to romanize Korean and leak English
+    # words into CJK/Devanagari output unless told explicitly to stay in script.
+    TARGET_SCRIPTS = {
+        "zh": "Simplified Chinese characters",
+        "ja": "Japanese, using kana and kanji",
+        "ko": "Korean, using Hangul (한글) — never romanization",
+        "hi": "Hindi, using the Devanagari script",
+    }
+    if tgt_script := TARGET_SCRIPTS.get(target_lang):
+        system_prompt += (
+            f" Write the translation entirely in {tgt_script}. "
+            "Never romanize or transliterate, and never leave individual English or "
+            "source-language words inside the translation."
         )
 
     payload = {
@@ -456,6 +494,12 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
                 return ""
             resp.raise_for_status()
             translation = resp.json()["message"]["content"].strip()
+            if _translation_has_english_leak(translation, target_lang):
+                logger.warning(
+                    f"🌐 Translation ({tgt_name}) looks romanized/leaked-English — "
+                    f"discarding it to trigger a retry: {translation!r}"
+                )
+                return ""
             logger.info(f"🌐 Translation ({tgt_name}): {translation!r}")
             return translation
     except httpx.ConnectError:

@@ -969,16 +969,21 @@
       // fires, so no audio chunks are ever sent.
       setStatus("starting");
       try {
-        const AudioCtor = window.AudioContext || window.webkitAudioContext;
-        try {
-          audioCtx = new AudioCtor({ sampleRate: 16000 });
-        } catch (rateErr) {
-          // Some WebKit versions throw on an explicit sampleRate constraint
-          // rather than just ignoring it. Retry with the device's default
-          // rate — the server resamples based on whatever we report back,
-          // so this doesn't need to be exactly 16000 to work correctly.
-          console.warn("[AUDIO] 16kHz AudioContext rejected, falling back to device default:", rateErr);
-          audioCtx = new AudioCtor();
+        // Reuse the capture context kept alive by stopCapture (below) when we
+        // can — creating a fresh AudioContext is comparatively slow on iOS and
+        // adds to the perceived "Start Listening" lag.
+        if (!audioCtx || audioCtx.state === "closed") {
+          const AudioCtor = window.AudioContext || window.webkitAudioContext;
+          try {
+            audioCtx = new AudioCtor({ sampleRate: 16000 });
+          } catch (rateErr) {
+            // Some WebKit versions throw on an explicit sampleRate constraint
+            // rather than just ignoring it. Retry with the device's default
+            // rate — the server resamples based on whatever we report back,
+            // so this doesn't need to be exactly 16000 to work correctly.
+            console.warn("[AUDIO] 16kHz AudioContext rejected, falling back to device default:", rateErr);
+            audioCtx = new AudioCtor();
+          }
         }
         if (audioCtx.state === "suspended") {
           // Non-blocking: the capture loop's safety net below also resumes the
@@ -1097,12 +1102,15 @@
     }
 
     function stopCapture() {
-      if (scriptNode) {
-        scriptNode.disconnect();
-        micSource?.disconnect();
-        audioCtx?.close();
+      if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+      if (micSource) { micSource.disconnect(); micSource = null; }
+
+      // Keep the capture context alive (suspended) so the next Start reuses it
+      // instead of paying for a fresh AudioContext on iOS. Mic tracks are
+      // stopped below, so nothing is recorded while idle.
+      if (audioCtx && audioCtx.state !== "closed") {
+        audioCtx.suspend().catch(() => {});
       }
-      scriptNode = micSource = audioCtx = null;
 
       micStream?.getTracks().forEach(t => t.stop());
       micStream = null;
