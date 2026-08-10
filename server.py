@@ -1152,6 +1152,12 @@ async def ws_stream(websocket: WebSocket):
             logger.info(f"[{session_id}] 🔄 Translating now")
             translated_text = await translate_text(original_text, state.source_lang, state.target_lang)
             if not translated_text:
+                # Ollama occasionally returns an empty response for a language
+                # under load — one retry before dropping the utterance.
+                logger.warning(f"[{session_id}] ⚠️  Translation returned empty — retrying once.")
+                await asyncio.sleep(0.5)
+                translated_text = await translate_text(original_text, state.source_lang, state.target_lang)
+            if not translated_text:
                 logger.warning(f"[{session_id}] ⚠️  Translation returned empty.")
                 return
 

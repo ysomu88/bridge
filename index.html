@@ -981,13 +981,24 @@
           audioCtx = new AudioCtor();
         }
         if (audioCtx.state === "suspended") {
-          await audioCtx.resume();
+          // Non-blocking: the capture loop's safety net below also resumes the
+          // context if it ever slips back to suspended.
+          audioCtx.resume().catch(() => {});
         }
         console.log("[AUDIO] AudioContext state:", audioCtx.state, "| sampleRate:", audioCtx.sampleRate);
+
+        // Open the socket straight away — it only needs the context's sample
+        // rate and the selected languages. On slow links (cellular + tunnel)
+        // the handshake then overlaps the mic warm-up below instead of adding
+        // to it, which makes "Start Listening" feel far more responsive.
+        setSelectorsDisabled(true);
+        connectWebSocket();
       } catch (err) {
         console.error("[AUDIO] AudioContext init failed:", err);
         setStatus("error");
         statusLabel.textContent = "Audio error — check browser settings";
+        if (ws) { ws.onclose = null; ws.close(); ws = null; }
+        setSelectorsDisabled(false);
         return;
       }
 
@@ -1006,11 +1017,12 @@
         setStatus("error");
         statusLabel.textContent = "Mic error — check permissions";
         console.error("[MIC]", err);
+        // The socket was already opened for the session — abort it cleanly if
+        // the mic grant was declined so the server doesn't keep a ghost session.
+        if (ws) { ws.onclose = null; ws.close(1000); ws = null; }
+        setSelectorsDisabled(false);
         return;
       }
-
-      setSelectorsDisabled(true);
-      connectWebSocket();
 
       micSource = audioCtx.createMediaStreamSource(micStream);
       
