@@ -44,8 +44,8 @@ if sys.platform == "win32":
 import asyncio
 import io
 import json
-import re
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -344,7 +344,7 @@ def webm_bytes_to_float32(raw_bytes: bytes, source_sr: int = 16_000, target_sr: 
 
         if source_sr and source_sr != target_sr and len(audio) > 1:
             duration_s = len(audio) / source_sr
-            new_len = max(1, int(round(duration_s * target_sr)))
+            new_len = max(1, round(duration_s * target_sr))
             # Lightweight linear-interpolation resample. Not as clean as a
             # proper sinc/polyphase resampler, but adds no extra runtime
             # dependency and is more than adequate quality for STT input.
@@ -906,9 +906,7 @@ def _looks_like_audio(contents: bytes) -> bool:
     if len(contents) >= 8 and contents[4:8] == b"ftyp":
         return True
     # Bare MP3 frame sync (no ID3 tag): 0xFFEx / 0xFFFx
-    if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
-        return True
-    return False
+    return len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0
 
 
 @app.post("/api/voice/upload")
