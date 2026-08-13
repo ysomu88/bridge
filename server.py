@@ -48,6 +48,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 import httpx
@@ -272,6 +273,12 @@ VAD_SILENCE_DB: float = -40.0       # dBFS below which we call it silence
 VAD_SILENCE_DURATION_S: float = 0.3 # seconds of silence before triggering
 VAD_MIN_SPEECH_S: float = 0.3       # ignore utterances shorter than this
 MAX_UTTERANCE_S: float = 30.0       # force-process marathon speech (no natural pause) to cap audio_buffer growth
+# Minimum total speech (seconds) Silero VAD must find before we bother running
+# Whisper. The bridge's naive energy VAD flags noise as speech near the dBFS
+# threshold, and faster-whisper then removes ALL of it — we saw many
+# "VAD filter removed 00:03.840 of 00:03.840 → empty transcript" cycles. Skipping
+# Whisper for such noise-only utterances avoids wasted GPU work on every one.
+MIN_VAD_SPEECH_GATE_S: float = 0.15
 VAD_SETTLE_S: float = 1.2           # ignore VAD for this long after connect (Start-tap / mic warm-up noise → no phantom first utterance)
 
 
@@ -302,6 +309,13 @@ class SessionState:
         # finishes — otherwise the pipeline would re-trigger on its own echo
         # and enter a feedback loop.
         self.tts_playing: bool = False
+        # Monotonic deadline until which VAD ignores speech. We send TTS much
+        # faster than real-time, so the client keeps *playing* our buffered
+        # audio well past the end of the streaming loop. A fixed 0.5s tail was
+        # too short — the echo of our own playback re-triggered VAD immediately
+        # after the clip ended. `arm_echo_guard()` sets this to cover the full
+        # playout duration instead.
+        self.tts_until: float = 0.0
 
     def append_chunk(self, data: bytes) -> None:
         self.audio_buffer.write(data)
@@ -319,6 +333,24 @@ class SessionState:
         if self.speech_start is None:
             return 0.0
         return time.monotonic() - self.speech_start
+
+    def arm_echo_guard(self, audio_duration_s: float) -> None:
+        """Disarm the streaming flag and arm the playout-tail echo guard for the
+        full duration of the audio we just sent.
+
+        After `_synthesise_*` finishes writing bytes the client is still playing
+        the tail of that clip (it buffered ahead), so the mic may keep hearing
+        our own output for up to `audio_duration_s`. Keep VAD suppressed across
+        that whole window (plus a small tail) instead of a fixed 0.5s.
+        """
+        self.tts_until = time.monotonic() + max(0.0, audio_duration_s) + 0.5
+        self.tts_playing = False
+
+    def echo_guard_active(self) -> bool:
+        """True while we are streaming TTS or the client may still be playing
+        our output back — the mic could be hearing ourselves, so VAD must not
+        trigger on that audio."""
+        return self.tts_playing or time.monotonic() < self.tts_until
 
 
 # ---------------------------------------------------------------------------
@@ -368,12 +400,54 @@ def webm_bytes_to_float32(raw_bytes: bytes, source_sr: int = 16_000, target_sr: 
 # ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
+def _detected_speech_seconds(audio: np.ndarray, sample_rate: int = 16_000) -> float | None:
+    """Run Silero VAD (the same model faster-whisper applies internally) over an
+    already-decoded utterance and return the total duration of speech it detects.
+
+    Returns the total speech seconds, or ``None`` if the VAD pass fails so the
+    caller can fall back to transcribing normally instead of dropping an
+    utterance on a tooling hiccup.
+    """
+    try:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        stamps = get_speech_timestamps(
+            audio,
+            VadOptions(
+                threshold=0.5,
+                min_silence_duration_ms=500,
+                min_speech_duration_ms=0,
+                speech_pad_ms=0,
+            ),
+            sampling_rate=sample_rate,
+        )
+    except Exception as exc:
+        logger.debug(f"VAD pre-screen failed ({exc}) — proceeding with transcription.")
+        return None
+    if not stamps:
+        return 0.0
+    return sum((stamp["end"] - stamp["start"]) for stamp in stamps) / sample_rate
+
+
 async def transcribe(audio: np.ndarray, source_lang: str) -> str:
     """Run faster-whisper in a thread pool configured with session language parameters."""
     if whisper_model is None:
         return ""
 
     loop = asyncio.get_running_loop()
+
+    # Pre-screen with Silero VAD. faster-whisper applies the very same VAD inside
+    # transcribe() and returns an empty transcript when it removes ~all of the
+    # audio — but only AFTER a full Whisper pass. The bridge's naive energy VAD
+    # had already flagged that noise as "speech" and queued an utterance, so
+    # without this gate every noise burst near the dBFS threshold burns a
+    # Whisper inference for nothing. Skip early when VAD finds no real speech.
+    vad_s = await loop.run_in_executor(None, _detected_speech_seconds, audio, 16_000)
+    if vad_s is not None and vad_s < MIN_VAD_SPEECH_GATE_S:
+        logger.warning(
+            f"Silero VAD found no audible speech ({vad_s:.2f}s) — skipping transcription."
+        )
+        return ""
 
     def _run() -> str:
         segments, _ = whisper_model.transcribe(
@@ -519,6 +593,7 @@ async def _synthesise_piper(
     websocket: WebSocket,
     loop,
     state: SessionState,
+    client_gone: Callable[[], bool] | None = None,
 ) -> None:
     """Synthesise text using Piper and stream raw int16 PCM back to client."""
     import io as _io
@@ -538,6 +613,9 @@ async def _synthesise_piper(
         buf.seek(0)
         with _wave.open(buf, "rb") as wav:
             return wav.readframes(wav.getnframes()), wav.getframerate()
+
+    if client_gone is not None and client_gone():
+        return
 
     try:
         pcm_bytes, sample_rate = await loop.run_in_executor(None, _generate)
@@ -565,11 +643,10 @@ async def _synthesise_piper(
                 logger.warning("WebSocket closed during Piper TTS streaming.")
                 return
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
-        state.tts_playing = False
+        # The client keeps playing the buffered clip for the full audio length;
+        # keep the echo guard armed across that entire playout window (plus a
+        # small tail) so our own output can't re-trigger VAD after we stop.
+        state.arm_echo_guard(len(pcm_bytes) / 2 / sample_rate)
 
     logger.info(f"🔊 Piper TTS stream complete ({target_lang}).")
 
@@ -584,6 +661,7 @@ async def _synthesise_chatterbox(
     loop,
     voice_id: str,
     state: SessionState,
+    client_gone: Callable[[], bool] | None = None,
 ) -> None:
     """
     Synthesise text in the user's cloned voice via Chatterbox Multilingual,
@@ -591,18 +669,18 @@ async def _synthesise_chatterbox(
     """
     if chatterbox_model is None:
         logger.warning("Chatterbox not loaded — falling back to preset voice.")
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state, client_gone)
 
     ref_path = voice_profiles.get(voice_id)
     if ref_path is None or not os.path.exists(ref_path):
         logger.warning(f"Voice profile '{voice_id}' not found on disk — falling back to preset voice.")
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state, client_gone)
 
     if target_lang not in CHATTERBOX_LANGUAGES:
         logger.warning(
             f"Chatterbox does not support '{target_lang}' — falling back to preset voice for this language."
         )
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state, client_gone)
 
     def _generate():
         # Cache the voice embedding per voice_id. Chatterbox's generate() re-runs
@@ -654,12 +732,19 @@ async def _synthesise_chatterbox(
         return wav_tensor, chatterbox_model.sr
 
     pipeline_start = time.monotonic()
+    # Bail before the expensive GPU calls (cache restore + generate) if the
+    # client already disconnected — no point synthesising audio nobody will
+    # hear. Generation itself still can't be cancelled mid-flight, but this
+    # skips enqueueing it when the socket dropped during the earlier stages.
+    if client_gone is not None and client_gone():
+        logger.info(f"[{voice_id}] Client disconnected — skipping Chatterbox generation.")
+        return
     try:
         async with cuda_lock:
             wav_tensor, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Chatterbox synthesis error for voice '{voice_id}': {exc}")
-        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state)
+        return await _synthesise_chatterbox_fallback(text, target_lang, websocket, loop, state, client_gone)
 
     logger.info(f"[{voice_id}] Total synthesis (lock + generate): {time.monotonic() - pipeline_start:.1f}s")
 
@@ -688,16 +773,15 @@ async def _synthesise_chatterbox(
                 logger.warning("WebSocket closed during Chatterbox TTS streaming.")
                 return
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
-        state.tts_playing = False
+        # The client keeps playing the buffered clip for the full audio length;
+        # keep the echo guard armed across that entire playout window (plus a
+        # small tail) so our own output can't re-trigger VAD after we stop.
+        state.arm_echo_guard(len(pcm_bytes) / 2 / sample_rate)
 
     logger.info(f"🎙️  Chatterbox cloned-voice TTS stream complete ({target_lang}, voice={voice_id}).")
 
 
-async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket: WebSocket, loop, state: SessionState) -> None:
+async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket: WebSocket, loop, state: SessionState, client_gone: Callable[[], bool] | None = None) -> None:
     """If cloning fails for any reason, fall back to the normal preset-voice pipeline."""
     # Surface the fallback to the client so it can switch its voice indicator.
     try:
@@ -710,7 +794,7 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
 
     PIPER_LANGUAGES = {"ko", "de"}
     if target_lang in PIPER_LANGUAGES and target_lang in piper_voices:
-        await _synthesise_piper(text, target_lang, websocket, loop, state)
+        await _synthesise_piper(text, target_lang, websocket, loop, state, client_gone)
         return
 
     if kokoro_pipeline is None:
@@ -729,6 +813,9 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
         chunk_size = 2400
         chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
         return chunks, sample_rate
+
+    if client_gone is not None and client_gone():
+        return
 
     try:
         chunks, sample_rate = await loop.run_in_executor(None, _generate)
@@ -753,11 +840,9 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
             except Exception:
                 return
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
-        state.tts_playing = False
+        # Keep the echo guard armed across the full playout window of the sent
+        # clip so our own output can't re-trigger VAD after we stop streaming.
+        state.arm_echo_guard(sum(len(a) for a in chunks if a is not None) / sample_rate)
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +856,7 @@ async def synthesise_and_stream(
     target_lang: str,
     state: SessionState,
     session_voice_id: str | None = None,
+    client_gone: Callable[[], bool] | None = None,
 ) -> None:
     """Synthesise target text and stream PCM bytes back to client with layout routing indicators."""
     if not translated_text:
@@ -793,7 +879,7 @@ async def synthesise_and_stream(
 
     # ── Route to a cloned voice via Chatterbox if this session has one ──
     if session_voice_id and session_voice_id in voice_profiles:
-        await _synthesise_chatterbox(translated_text, target_lang, websocket, loop, session_voice_id, state)
+        await _synthesise_chatterbox(translated_text, target_lang, websocket, loop, session_voice_id, state, client_gone)
         return
 
     # ── Route to Piper for languages Kokoro doesn't support ─────────────
@@ -806,7 +892,7 @@ async def synthesise_and_stream(
                 f"Download the voice files and place them in piper_voices/."
             )
             return
-        await _synthesise_piper(translated_text, target_lang, websocket, loop, state)
+        await _synthesise_piper(translated_text, target_lang, websocket, loop, state, client_gone)
         return
 
     if kokoro_pipeline is None:
@@ -841,6 +927,9 @@ async def synthesise_and_stream(
         chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
         return chunks, sample_rate
 
+    if client_gone is not None and client_gone():
+        return
+
     try:
         chunks, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
@@ -867,11 +956,10 @@ async def synthesise_and_stream(
                 logger.warning("WebSocket closed during TTS streaming.")
                 return
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
-        state.tts_playing = False
+        # The client keeps playing the buffered clip for the full audio length;
+        # keep the echo guard armed across that entire playout window (plus a
+        # small tail) so our own output can't re-trigger VAD after we stop.
+        state.arm_echo_guard(sum(len(a) for a in chunks if a is not None) / sample_rate)
 
     logger.info("🔊 TTS stream complete.")
 
@@ -1208,7 +1296,14 @@ async def ws_stream(websocket: WebSocket):
                 return
 
             await synthesise_and_stream(
-                translated_text, websocket, original_text, state.source_lang, state.target_lang, state, state.voice_id
+                translated_text,
+                websocket,
+                original_text,
+                state.source_lang,
+                state.target_lang,
+                state,
+                state.voice_id,
+                client_gone,
             )
         finally:
             # Whatever happened above (success, empty transcript, translation
@@ -1302,12 +1397,13 @@ async def ws_stream(websocket: WebSocket):
                     continue
 
                 # Speaker-feedback guard: while our own TTS is streaming to this
-                # client, that audio can loop back into the mic through speakers
-                # with weak echo cancellation. Ignore VAD entirely during playback
-                # so the pipeline can't re-harvest its own output and enter a
-                # feedback loop. Audio keeps buffering regardless — speech that
-                # starts after playback resumes is handled normally.
-                if state.tts_playing:
+                # client — and for as long as the sent clip keeps playing from
+                # its buffer — that audio can loop back into the mic through
+                # speakers with weak echo cancellation. Ignore VAD during that
+                # whole window so the pipeline can't re-harvest its own output
+                # and enter a feedback loop. Audio keeps buffering regardless —
+                # speech that starts after playback resumes is handled normally.
+                if state.echo_guard_active():
                     continue
 
                 async def trigger_utterance() -> bool:
