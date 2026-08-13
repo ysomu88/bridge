@@ -48,8 +48,8 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import Callable
 
 import httpx
 import numpy as np
