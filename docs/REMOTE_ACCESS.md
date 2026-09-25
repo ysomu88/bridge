@@ -408,7 +408,7 @@ Once the PC is on, everything in this document works unchanged.
 | `setup-remote-access.ps1` | One-time elevated setup (Tailscale, OpenSSH, keys, task) |
 | `restart-tailscale.ps1` | Recovery helper — restarts a Tailscale backend wedged in `NoState` |
 | `diagnose-ssh-firewall.ps1` | Troubleshooting — firewall/adapter report, then the minimum fix and a re-test |
-| `REMOTE_ACCESS.md` | This document |
+| `docs/REMOTE_ACCESS.md` | This document |
 | `remote_logs/` | Runtime logs (gitignored) |
 
 The `BridgeStack` scheduled task is the only thing registered outside the repo.

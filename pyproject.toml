@@ -67,7 +67,7 @@ override-dependencies = [
 # The server sets the required environment variables automatically on startup.
 #
 # Piper voice files (Korean, German) must be downloaded manually into
-# piper_voices/ — see DOCUMENTATION.md.
+# piper_voices/ — see docs/DOCUMENTATION.md.
 #
 # Chatterbox-tts requires PyTorch with CUDA support. If voice cloning loads
 # on CPU instead of CUDA, verify your torch build matches your installed

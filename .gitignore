@@ -5,7 +5,7 @@ voices.json
 *.onnx.json
 *.bin
 
-# Piper voice model files (downloaded separately — see DOCUMENTATION.md)
+# Piper voice model files (downloaded separately — see docs/DOCUMENTATION.md)
 piper_voices/
 
 # User-recorded voice cloning reference clips — personal audio, never commit
@@ -36,8 +36,14 @@ Desktop.ini
 .DS_Store
 
 # ── Docs & internal files ─────────────────────────────────────────────────
+# Tracked documentation lives in docs/; any stray local file dropped there
+# is ignored, so only real .md docs get committed from that folder.
 TECHNICAL_WALKTHROUGH.md
 docs/*
+!docs/*.md
+# Must come AFTER the negation above, or !docs/*.md would un-ignore it and
+# publish an internal document to a public repository.
+docs/TECHNICAL_WALKTHROUGH.md
 
 # ── Launch scripts (keep start.ps1, ignore personal tunnel script) ─────────
 run_bridge.ps1

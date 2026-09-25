@@ -220,7 +220,7 @@ if ($SkipOpenSSH) {
 
         # Make PowerShell the default shell for SSH sessions. Windows' default is
         # cmd.exe, where $HOME does not exist - so the phone snippets documented
-        # in REMOTE_ACCESS.md fail with "the -File parameter does not exist".
+        # in docs/REMOTE_ACCESS.md fail with "the -File parameter does not exist".
         # Takes effect on NEW sessions only; the user must reconnect.
         $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         if (Test-Path -LiteralPath $psExe) {
@@ -389,7 +389,7 @@ if (Test-Path -LiteralPath $RemoteScript) {
 }
 
 # Put this folder on the user's PATH so the short "bridge" command works from any
-# shell - that is what the phone snippets in REMOTE_ACCESS.md use. No admin
+# shell - that is what the phone snippets in docs/REMOTE_ACCESS.md use. No admin
 # needed: this writes the user's own environment, not the machine's.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $pathParts = @()
@@ -454,4 +454,4 @@ Write-Summary ''
 Write-Summary ('  Full log: {0}' -f $LogFile) 'DarkGray'
 Write-Summary ''
 Write-Summary '  (This summary is also written to the log above, in case this window closes.)'
-Log-Ok 'Done. See REMOTE_ACCESS.md for the walkthrough and troubleshooting.'
+Log-Ok 'Done. See docs/REMOTE_ACCESS.md for the walkthrough and troubleshooting.'

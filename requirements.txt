@@ -36,7 +36,7 @@ kokoro-onnx>=0.5.0     # 82M-param ONNX TTS; covers EN, ES, FR, IT, JA, ZH, HI, 
 # ── Piper TTS (Korean, German) ───────────────────────────────────────────
 # Required for languages not covered by kokoro-onnx.
 # Voice model files (.onnx + .onnx.json) must be downloaded separately
-# into the piper_voices/ directory — see DOCUMENTATION.md for instructions.
+# into the piper_voices/ directory — see docs/DOCUMENTATION.md for instructions.
 piper-tts
 
 # ── PyTorch (CUDA build) ───────────────────────────────────────────────────────
