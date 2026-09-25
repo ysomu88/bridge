@@ -219,6 +219,30 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 
 ---
 
+## 🔒 What is and isn't public
+
+This repo is public, so it is worth being explicit about what lives in it — and, more importantly, what does not.
+
+**Everything tracked here is meant to be public.** That is the source: `server.py`, `index.html`, the `.ps1` / `.cmd` launchers, the docs, and the CI config. The PowerShell scripts are *product*, not secrets — `bridge-remote.ps1` and `setup-remote-access.ps1` are the entire remote-control feature, and hiding them would give every other user a repo with no phone control.
+
+**What is never committed**, and where it actually lives instead:
+
+| Thing | Where it really is |
+|---|---|
+| Your SSH private key | `~\.ssh\` — outside this folder, and pattern-ignored in case it isn't |
+| The public half of that key | `C:\ProgramData\ssh\administrators_authorized_keys`, ACL-locked to SYSTEM + Administrators (and a *public* key is not a secret anyway) |
+| Your Windows account password | Task Scheduler's LSA secret store — read at runtime by `Get-Credential`, never written to a file |
+| Model weights & voice files | `*.onnx`, `*.bin`, `voices.json`, `piper_voices/` |
+| Your recorded voice clips | `voice_samples/` — deleted from disk at shutdown |
+| Logs, tunnel URL, your IPs | `remote_logs/` |
+| `.env` files and API keys | `.env.*` (a `.env.example` with blanks is welcome) |
+
+**The rule to keep:** ignore *personal* scripts, track *shared* ones. `run_bridge.ps1` is a local convenience launcher and is gitignored; `bridge-remote.ps1` is part of the project and is tracked. If you ever write a script that genuinely embeds a secret, ignore **that one file by name** — never `*.ps1` — or better, read the secret from an ignored `.env.local` at runtime.
+
+Two habits that keep it clean: run `git status` before committing (`.gitignore` prevents *accidental* adds, not deliberate `git add -f` ones), and prefer placeholders like `<you>` over your real username in docs.
+
+---
+
 ## 🔧 Troubleshooting
 
 **Translation never triggers after I stop speaking**
