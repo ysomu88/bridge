@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI):
             else:
                 logger.warning(
                     f"⚠️  Piper voice files not found for '{lang}'. "
-                    f"Download to: {model_path} — see DOCUMENTATION.md for instructions."
+                    f"Download to: {model_path} — see docs/DOCUMENTATION.md for instructions."
                 )
     except ImportError:
         logger.warning("piper-tts not installed — Korean/German TTS disabled. Run: uv pip install piper-tts")

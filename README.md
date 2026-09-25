@@ -48,7 +48,7 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 
 > **Voice Cloning** means hearing the translation in *your own voice* via the Playback Voice panel (powered by Chatterbox). Every language in the table except Telugu supports cloning — including German and Korean, which Chatterbox handles natively even though the preset voice for those depends on Piper.
 >
-> German preset voice output uses the Piper voice bundled in `piper_voices/`. Korean preset voice output works the same way once you add the voice files (`piper-kss-korean.onnx` + `.json`) to `piper_voices/` — see `DOCUMENTATION.md` for download instructions. Telugu currently renders subtitles only; no TTS voice or voice cloning is available for it yet.
+> German preset voice output uses the Piper voice bundled in `piper_voices/`. Korean preset voice output works the same way once you add the voice files (`piper-kss-korean.onnx` + `.json`) to `piper_voices/` — see `docs/DOCUMENTATION.md` for download instructions. Telugu currently renders subtitles only; no TTS voice or voice cloning is available for it yet.
 
 ---
 
@@ -206,16 +206,22 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 | `index.html` | Browser client — mic capture, VAD, subtitle display, audio playback |
 | `start.ps1` | One-click local launch — boots Ollama, waits for it, starts the server |
 | `run_bridge.ps1` | Standalone public-tunnel launcher (thin wrapper on `bridge-remote.ps1`) |
-| `bridge-remote.ps1` | Remote control — start / stop / status / logs / shutdown the stack from your phone (see `REMOTE_ACCESS.md`) |
+| `bridge-remote.ps1` | Remote control — start / stop / status / logs / shutdown the stack from your phone (see `docs/REMOTE_ACCESS.md`) |
 | `bridge.cmd` | Short entry point — with the folder on your `PATH`, type `bridge start` / `bridge stop` from any shell |
 | `setup-remote-access.ps1` | One-time elevated setup — Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
-| `REMOTE_ACCESS.md` | Phone-control walkthrough — setup, one-tap snippets, security, troubleshooting |
-| `restart-tailscale.ps1` | Recovery helper for a Tailscale backend stuck in `NoState` |
+| `restart-tailscale.ps1` | Recovery helper — a Tailscale backend stuck in `NoState` |
 | `diagnose-ssh-firewall.ps1` | Troubleshooting report for SSH-over-Tailscale connectivity |
 | `requirements.txt` | Python dependencies |
-| `DOCUMENTATION.md` | Full architecture and technical reference |
 | `voice_samples/` | Locally recorded voice cloning reference clips (gitignored, swept at startup/shutdown) |
 | `piper_voices/` | Optional Piper TTS voices — German is bundled; add the Korean voice to enable Korean audio |
+
+**Documentation lives in `docs/`:**
+
+| Doc | Purpose |
+|---|---|
+| [`docs/DOCUMENTATION.md`](docs/DOCUMENTATION.md) | Full architecture and technical reference |
+| [`docs/REMOTE_ACCESS.md`](docs/REMOTE_ACCESS.md) | Phone-control walkthrough — setup, one-tap snippets, security, troubleshooting |
+| [`docs/bridge-troubleshooting-guide.md`](docs/bridge-troubleshooting-guide.md) | Install and setup problems, with the verified clean-install sequence |
 
 ---
 
