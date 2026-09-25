@@ -41,3 +41,7 @@ docs/*
 
 # ── Launch scripts (keep start.ps1, ignore personal tunnel script) ─────────
 run_bridge.ps1
+
+# ── Remote control runtime artifacts (logs, generated keys) ────────────────
+remote_logs/
+*bridge_phone_ed25519*
