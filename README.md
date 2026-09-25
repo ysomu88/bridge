@@ -207,6 +207,7 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 | `start.ps1` | One-click local launch — boots Ollama, waits for it, starts the server |
 | `run_bridge.ps1` | Standalone public-tunnel launcher (thin wrapper on `bridge-remote.ps1`) |
 | `bridge-remote.ps1` | Remote control — start / stop / status / logs / shutdown the stack from your phone (see `REMOTE_ACCESS.md`) |
+| `bridge.cmd` | Short entry point — with the folder on your `PATH`, type `bridge start` / `bridge stop` from any shell |
 | `setup-remote-access.ps1` | One-time elevated setup — Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
 | `REMOTE_ACCESS.md` | Phone-control walkthrough — setup, one-tap snippets, security, troubleshooting |
 | `restart-tailscale.ps1` | Recovery helper for a Tailscale backend stuck in `NoState` |

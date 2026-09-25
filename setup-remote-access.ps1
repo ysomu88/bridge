@@ -370,6 +370,25 @@ if (Test-Path -LiteralPath $RemoteScript) {
     Log-Fail ('bridge-remote.ps1 not found at {0}' -f $RemoteScript)
 }
 
+# Put this folder on the user's PATH so the short "bridge" command works from any
+# shell - that is what the phone snippets in REMOTE_ACCESS.md use. No admin
+# needed: this writes the user's own environment, not the machine's.
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$pathParts = @()
+if ($userPath) { $pathParts = @($userPath -split ';' | Where-Object { $_ }) }
+if ($pathParts -notcontains $RepoRoot) {
+    try {
+        [Environment]::SetEnvironmentVariable('Path', ((@($pathParts) + $RepoRoot) -join ';'), 'User')
+        Log-Ok ("Added {0} to your user PATH." -f $RepoRoot)
+        Log-Info 'Reconnect your SSH session (or sign out and back in) for this to take effect.'
+    } catch {
+        Log-Warn ('Could not update the user PATH: ' + $_.Exception.Message)
+        Log-Warn 'You can still run scripts by their full path.'
+    }
+} else {
+    Log-Ok 'Repo folder is already on your user PATH.'
+}
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
