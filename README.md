@@ -24,7 +24,7 @@ No cloud APIs. No subscriptions. 100% private, local compute.
 - 🔊 **Natural voice output** — Ultra-fast TTS streamed back to your browser, with automatic sample-rate adaptation so Kokoro, Piper, and cloned voices all play at the correct pitch
 - 🎙️ **Voice cloning playback** — Optionally hear the translation in *your own voice* from a 15-second sample, instead of a preset voice
 - 💻 **Low VRAM footprint** — Fits comfortably on 8 GB VRAM (tested on RTX 3070 Ti, Windows 11)
-- 🌐 **Remote sharing ready** — Tunnel your pipeline so external users can connect from any browser
+- 🌐 **Remote sharing ready** — `bridge-remote.ps1 start` also opens a public `loca.lt` URL (always reporting the subdomain it actually got) so external users can connect from any browser; `stop` closes it again
 - 📱 **Any browser, any device** — Capture-rate resampling, Safari-friendly recording fallbacks, and gesture-unlocked playback work across iOS/Android phones, tablets, and desktops
 - 🔇 **Speaker-safe audio** — You never hear your own microphone, and speech detection pauses briefly while translation audio plays so speakers can't feed the output back into the mic
 
@@ -205,7 +205,7 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 | `server.py` | FastAPI backend — WebSocket, Whisper STT, Ollama translation, Kokoro/Piper/Chatterbox TTS |
 | `index.html` | Browser client — mic capture, VAD, subtitle display, audio playback |
 | `start.ps1` | One-click local launch — boots Ollama, waits for it, starts the server |
-| `run_bridge.ps1` | One-click remote tunnel launcher (localtunnel → https://bridge.loca.lt) |
+| `run_bridge.ps1` | Standalone public-tunnel launcher (thin wrapper on `bridge-remote.ps1`) |
 | `bridge-remote.ps1` | Remote control — start / stop / status / logs / shutdown the stack from your phone (see `REMOTE_ACCESS.md`) |
 | `setup-remote-access.ps1` | One-time elevated setup — Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
 | `REMOTE_ACCESS.md` | Phone-control walkthrough — setup, one-tap snippets, security, troubleshooting |
