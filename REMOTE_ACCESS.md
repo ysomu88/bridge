@@ -213,6 +213,25 @@ send the link to can use the server without installing Tailscale:
 - `start -NoTunnel` skips it entirely — private to your tailnet
 - `start -Subdomain myname` asks for a different subdomain
 
+### Running it from your phone works
+
+`start` is safe over SSH. The tunnel runs in its own on-demand scheduled task
+(`BridgeTunnel`), **not** as a child of your SSH session — because Windows
+OpenSSH tears down the entire process tree when a session disconnects. A tunnel
+launched directly by an SSH command dies the moment you close Termius, while the
+server (owned by the `BridgeStack` task) keeps serving — leaving a public URL
+that 502s.
+
+You can confirm who owns it:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" |
+    Where-Object { $_.CommandLine -match 'localtunnel' } |
+    ForEach-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)").Name }
+```
+
+It should report `powershell.exe` (the task worker) — not `sshd`.
+
 ### Subdomain collisions are handled for you
 
 `--subdomain bridge` is only a *preference*. If someone else already holds that
