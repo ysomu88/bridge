@@ -37,7 +37,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'tunnel', 'shutdown', 'cancel', 'help', 'ensure-task', '_run', '_tunnel_run')]
+    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'tunnel', 'shutdown', 'cancel', 'help', 'ensure-task', 'ensure-tunnel-task', '_run', '_tunnel_run')]
     [string]$Action = 'status',
 
     # start/tunnel: run in this console instead of in the background.
@@ -484,12 +484,12 @@ function Write-TunnelState {
 function Ensure-TunnelTask {
     if (Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue) { return 'Ready' }
 
-    # Reuse the stack task's logon type, so -RunWithoutLogon covers the tunnel too.
+    # Always register this one as Interactive. A "Password" logon type cannot be
+    # registered without the actual password, and this script never has it.
+    # setup-remote-access.ps1 -RunWithoutLogon is what registers BOTH the stack
+    # and the tunnel task with stored credentials, so in that setup this task
+    # already exists and we return early on the line above.
     $logonType = 'Interactive'
-    $stack = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($stack -and $stack.Principal -and $stack.Principal.LogonType) {
-        $logonType = [string]$stack.Principal.LogonType
-    }
 
     $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" _tunnel_run' -f $SelfPath
     $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
@@ -919,6 +919,11 @@ switch ($Action) {
     'ensure-task' {
         $state = Ensure-StackTask
         Write-Ok ("Scheduled task '{0}' is {1}." -f $TaskName, $state)
+        exit 0
+    }
+    'ensure-tunnel-task' {
+        $state = Ensure-TunnelTask
+        Write-Ok ("Scheduled task '{0}' is {1}." -f $TunnelTask, $state)
         exit 0
     }
     '_run'     { exit (Invoke-StackRun) }
