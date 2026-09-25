@@ -217,6 +217,24 @@ if ($SkipOpenSSH) {
             Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
             Log-Ok 'Disabled the default "OpenSSH-Server-In-TCP" rule (it would expose SSH to your LAN).'
         }
+
+        # Make PowerShell the default shell for SSH sessions. Windows' default is
+        # cmd.exe, where $HOME does not exist - so the phone snippets documented
+        # in REMOTE_ACCESS.md fail with "the -File parameter does not exist".
+        # Takes effect on NEW sessions only; the user must reconnect.
+        $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (Test-Path -LiteralPath $psExe) {
+            try {
+                Set-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell `
+                    -Value $psExe -ErrorAction Stop
+                Log-Ok 'Default SSH shell set to Windows PowerShell (applies to new sessions).'
+            } catch {
+                Log-Warn ('Could not set the default SSH shell: ' + $_.Exception.Message)
+                Log-Warn 'SSH sessions will use cmd.exe, so snippets must use absolute paths.'
+            }
+        } else {
+            Log-Warn ("PowerShell not found at {0} - SSH sessions will use cmd.exe." -f $psExe)
+        }
     } else {
         Log-Fail 'sshd service not found - OpenSSH Server did not install correctly.'
     }

@@ -209,6 +209,8 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 | `bridge-remote.ps1` | Remote control — start / stop / status / logs / shutdown the stack from your phone (see `REMOTE_ACCESS.md`) |
 | `setup-remote-access.ps1` | One-time elevated setup — Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
 | `REMOTE_ACCESS.md` | Phone-control walkthrough — setup, one-tap snippets, security, troubleshooting |
+| `restart-tailscale.ps1` | Recovery helper for a Tailscale backend stuck in `NoState` |
+| `diagnose-ssh-firewall.ps1` | Troubleshooting report for SSH-over-Tailscale connectivity |
 | `requirements.txt` | Python dependencies |
 | `DOCUMENTATION.md` | Full architecture and technical reference |
 | `voice_samples/` | Locally recorded voice cloning reference clips (gitignored, swept at startup/shutdown) |
