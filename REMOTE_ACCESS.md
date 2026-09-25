@@ -238,6 +238,47 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-remote-access.ps1" 
 You're on an older copy of the script — the `/c` comment used to contain double
 quotes, which mangles the command line. Pull the current `bridge-remote.ps1`.
 
+**A snippet fails with `the -File parameter does not exist`**
+Windows' default SSH shell is **cmd.exe**, and `$HOME` is not a cmd variable — it
+is passed through literally. The prompt tells you which shell you got:
+`PS C:\...>` is PowerShell, whereas `user@HOSTNAME C:\...>` is cmd.exe.
+
+Fix it once on the PC in an **elevated** PowerShell, then disconnect and
+reconnect from the phone (the change only affects new sessions):
+
+```powershell
+$k='HKLM:\SOFTWARE\OpenSSH'
+$ps='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+Set-ItemProperty $k -Name DefaultShell -Value $ps
+```
+
+`setup-remote-access.ps1` now does this automatically. Until you reconnect, the
+snippets must use absolute paths instead of `$HOME`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\<you>\Documents\PythonScripts\bridge\bridge-remote.ps1" status
+```
+
+**Tailscale says `NoState` / "Tailscale is starting" / the phone times out**
+The Tailscale backend can wedge after an install or an upgrade. A **reboot fixes
+it** — the node key is stored, so it normally re-registers by itself. If
+`tailscale status` then reports `Logged out`, click the tray icon → *Log in*.
+
+While it is wedged there is no tunnel, so port 22 **times out even though sshd is
+listening** — the virtual adapter exists but nothing is behind it. That is why
+this looks so much like a firewall problem. `restart-tailscale.ps1` tries a
+service restart first (cheap, sometimes enough); a reboot is the reliable fix.
+
+**Still stuck — run the diagnostics**
+
+```powershell
+.\diagnose-ssh-firewall.ps1
+```
+
+Dumps firewall profiles, network categories, every enabled inbound block rule,
+the Tailscale adapter state and a live port-22 test, then applies the minimum fix
+and re-tests. Add `-ReportOnly` to look without changing anything.
+
 ---
 
 ## Powering the PC on (later)
@@ -262,6 +303,8 @@ Once the PC is on, everything in this document works unchanged.
 |---|---|
 | `bridge-remote.ps1` | The remote control script (all actions) |
 | `setup-remote-access.ps1` | One-time elevated setup (Tailscale, OpenSSH, keys, task) |
+| `restart-tailscale.ps1` | Recovery helper — restarts a Tailscale backend wedged in `NoState` |
+| `diagnose-ssh-firewall.ps1` | Troubleshooting — firewall/adapter report, then the minimum fix and a re-test |
 | `REMOTE_ACCESS.md` | This document |
 | `remote_logs/` | Runtime logs (gitignored) |
 
