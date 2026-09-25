@@ -222,19 +222,40 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"Could not sweep stale voice sample {f}: {exc}")
         logger.info(f"🧹 Swept {swept} stale voice sample file(s) from a previous session.")
 
-    # ── Ollama connectivity check ───────────────────────────────────────────
+    # ── Ollama connectivity check + VRAM warm-up ───────────────────────────
+    # The first /api/chat after Ollama evicts the model has to pull ~2.6 GB back
+    # into VRAM before it can translate anything. That measured at 37 s on this
+    # machine, so we pay it once here rather than on the user's first sentence.
+    ollama_ready = False
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get("http://localhost:11434/api/tags")
             models = [m["name"] for m in resp.json().get("models", [])]
-            if not any("llama3.2" in m for m in models):
+            if any("llama3.2" in m for m in models):
+                logger.info("✅ Ollama reachable, llama3.2 available.")
+                ollama_ready = True
+            else:
                 logger.warning(
                     "⚠️  llama3.2 not found in Ollama. Run: ollama pull llama3.2"
                 )
-            else:
-                logger.info("✅ Ollama reachable, llama3.2 available.")
     except Exception:
         logger.warning("⚠️  Ollama not reachable at localhost:11434 — start it with: ollama serve")
+
+    if ollama_ready:
+        try:
+            logger.info(f"Loading {OLLAMA_MODEL} into VRAM (first translation will be instant)...")
+            t_warm = time.monotonic()
+            async with httpx.AsyncClient(timeout=240.0) as client:
+                await client.post(OLLAMA_URL, json={
+                    "model": OLLAMA_MODEL,
+                    "stream": False,
+                    "keep_alive": OLLAMA_KEEP_ALIVE,
+                    "options": {"num_predict": 1},
+                    "messages": [{"role": "user", "content": "hi"}],
+                })
+            logger.info(f"✅ {OLLAMA_MODEL} warm in {time.monotonic() - t_warm:.1f}s.")
+        except Exception as exc:
+            logger.warning(f"Ollama warm-up failed (non-fatal): {exc}")
 
     yield  # ── app runs ──
 
@@ -404,6 +425,11 @@ async def transcribe(audio: np.ndarray, source_lang: str) -> str:
 # ---------------------------------------------------------------------------
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "llama3.2"
+# Pin llama3.2 in VRAM between utterances. Ollama's default keep_alive is 5
+# minutes: after that idle period it evicts the model, and the next request has
+# to pull ~2.6 GB back into VRAM before it can translate anything. That reload
+# measured at 37 s on an RTX 3070 Ti, which is longer than anyone will wait.
+OLLAMA_KEEP_ALIVE = "30m"
 
 
 def _translation_has_english_leak(text: str, target_lang: str) -> bool:
@@ -472,10 +498,16 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     payload = {
         "model": OLLAMA_MODEL,
         "stream": False,
+        # Keep the weights resident between utterances so we never pay a VRAM
+        # reload in the middle of a session (see OLLAMA_KEEP_ALIVE).
+        "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "temperature": 0,      # deterministic — no creative variation
             "top_p": 1,
             "repeat_penalty": 1.0,
+            # Cap the reply: a 3B model sometimes repeats itself, and every extra
+            # token is latency the user is sitting through.
+            "num_predict": 256,
         },
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -483,9 +515,11 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
         ],
     }
 
+    started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(OLLAMA_URL, json=payload)
+            elapsed = time.monotonic() - started
             if resp.status_code == 404:
                 logger.error(
                     f"Ollama model '{OLLAMA_MODEL}' not found. "
@@ -500,7 +534,7 @@ async def translate_text(text: str, source_lang: str, target_lang: str) -> str:
                     f"discarding it to trigger a retry: {translation!r}"
                 )
                 return ""
-            logger.info(f"🌐 Translation ({tgt_name}): {translation!r}")
+            logger.info(f"🌐 Translation ({tgt_name}) in {elapsed:.1f}s: {translation!r}")
             return translation
     except httpx.ConnectError:
         logger.error("Ollama not reachable at localhost:11434 — is it running?")
