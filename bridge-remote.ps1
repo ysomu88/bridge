@@ -37,7 +37,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'tunnel', 'shutdown', 'cancel', 'help', 'ensure-task', '_run')]
+    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'tunnel', 'shutdown', 'cancel', 'help', 'ensure-task', '_run', '_tunnel_run')]
     [string]$Action = 'status',
 
     # start/tunnel: run in this console instead of in the background.
@@ -79,11 +79,13 @@ $WorkerLog  = Join-Path $LogDir 'worker.log'
 $TunnelLog  = Join-Path $LogDir 'tunnel.log'
 $TunnelErr  = Join-Path $LogDir 'tunnel.err.log'
 $TunnelState = Join-Path $LogDir 'tunnel.json'
+$TunnelReq  = Join-Path $LogDir 'tunnel-req.txt'
 $OllamaLog  = Join-Path $LogDir 'ollama.log'
 $OllamaErr  = Join-Path $LogDir 'ollama.err.log'
 $SelfPath   = $PSCommandPath
 
 $TaskName   = 'BridgeStack'
+$TunnelTask = 'BridgeTunnel'
 $BridgePort = 8000
 $OllamaPort = 11434
 
@@ -213,8 +215,9 @@ function Get-TailscaleSelf {
 # SSH session) going away. No trigger: it runs only when we ask it to.
 # ---------------------------------------------------------------------------
 function Get-StackTaskState {
+    param([string]$Name = $TaskName)
     try {
-        $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        $t = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
         if ($null -eq $t) { return 'Missing' }
         return [string]$t.State
     } catch {
@@ -473,6 +476,74 @@ function Write-TunnelState {
     } | ConvertTo-Json | Set-Content -LiteralPath $TunnelState -Encoding utf8
 }
 
+# The tunnel must NOT be a child of the calling shell. If `start` is run from an
+# SSH session, sshd kills that session's entire process tree on disconnect, so the
+# public URL would die the moment the phone's SSH app closed - while the server
+# (owned by the BridgeStack task) carried on serving. The tunnel therefore gets
+# its own on-demand task, for exactly the same reason the server does.
+function Ensure-TunnelTask {
+    if (Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue) { return 'Ready' }
+
+    # Reuse the stack task's logon type, so -RunWithoutLogon covers the tunnel too.
+    $logonType = 'Interactive'
+    $stack = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($stack -and $stack.Principal -and $stack.Principal.LogonType) {
+        $logonType = [string]$stack.Principal.LogonType
+    }
+
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" _tunnel_run' -f $SelfPath
+    $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument $arguments -WorkingDirectory $RepoRoot
+    $principal  = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
+        -LogonType $logonType
+    $settings   = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew
+
+    Register-ScheduledTask -TaskName $TunnelTask -Action $taskAction -Principal $principal `
+        -Settings $settings -Force `
+        -Description 'Public localtunnel URL for Bridge, detached from any SSH session.' | Out-Null
+    return 'Ready'
+}
+
+# _tunnel_run - worker executed BY the BridgeTunnel task (internal).
+function Invoke-TunnelRun {
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+    $wanted = 'bridge'
+    if (Test-Path -LiteralPath $TunnelReq) {
+        $txt = (Get-Content -LiteralPath $TunnelReq -Raw).Trim()
+        if ($txt) { $wanted = $txt }
+    }
+
+    $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
+    if (-not $npx) { $npx = Get-Command npx -ErrorAction SilentlyContinue }
+    if (-not $npx) {
+        'npx not found - install Node.js' | Set-Content -LiteralPath $TunnelErr
+        return 1
+    }
+
+    Remove-Item -LiteralPath $TunnelLog -Force -ErrorAction SilentlyContinue
+    $proc = Start-Process -FilePath $npx.Source `
+        -ArgumentList 'localtunnel', '--port', $BridgePort, '--subdomain', $wanted `
+        -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
+
+    $url = Wait-TunnelUrl -TimeoutSec 60
+    if (-not $url) {
+        ('localtunnel reported no URL within 60s (requested: ' + $wanted + ')') |
+            Add-Content -LiteralPath $TunnelErr
+        return 1
+    }
+
+    Write-TunnelState -Url $url -ProcessId $proc.Id -Requested $wanted
+
+    # Stay alive so the task owns the tunnel for as long as it is running.
+    $proc.WaitForExit()
+    Remove-Item -LiteralPath $TunnelState -Force -ErrorAction SilentlyContinue
+    return 0
+}
+
 function Show-TunnelBanner {
     param([string]$Url, [string]$Requested)
     $assigned = ([uri]$Url).Host -replace '\.loca\.lt$', ''
@@ -512,36 +583,80 @@ function Start-Tunnel {
     $tunnelArgs = @('localtunnel', '--port', $BridgePort, '--subdomain', $Subdomain)
 
     if ($Foreground) {
+        # Local console use: streaming here is fine, because this shell is the
+        # session that stays open. Over SSH, use the task path below instead.
         Write-Info 'Starting public tunnel (output is followed in this console)...'
         $proc = Start-Process -FilePath $npx.Source -ArgumentList $tunnelArgs `
             -NoNewWindow -PassThru -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
-    } else {
-        Write-Info 'Starting public tunnel in the background...'
-        $proc = Start-Process -FilePath $npx.Source -ArgumentList $tunnelArgs `
-            -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
+        $url = Wait-TunnelUrl -TimeoutSec 60
+        if (-not $url) {
+            Write-Fail 'localtunnel did not report a URL within 60 seconds.'
+            Show-LogTail -Path $TunnelErr -Lines 15
+            Show-LogTail -Path $TunnelLog -Lines 15
+            return 1
+        }
+        Write-TunnelState -Url $url -ProcessId $proc.Id -Requested $Subdomain
+        Show-TunnelBanner -Url $url -Requested $Subdomain
+        Write-Info 'Following tunnel output. Ctrl+C stops following (the tunnel keeps running).'
+        Get-Content -LiteralPath $TunnelLog -Wait -ErrorAction SilentlyContinue
+        return 0
     }
 
-    $url = Wait-TunnelUrl -TimeoutSec 60
+    # Detached path: the task owns the tunnel, so it survives this shell and any
+    # SSH session being closed. The worker writes the state file, so clear the
+    # old one first and then wait for the new URL to appear.
+    try {
+        $null = Ensure-TunnelTask
+    } catch {
+        Write-Fail ("Could not register the '{0}' task: {1}" -f $TunnelTask, $_.Exception.Message)
+        return 1
+    }
+
+    Remove-Item -LiteralPath $TunnelState -Force -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath $TunnelReq -Value $Subdomain -Encoding ascii
+
+    Write-Info ("Starting task '{0}' (detached from this session)..." -f $TunnelTask)
+    try {
+        Start-ScheduledTask -TaskName $TunnelTask
+    } catch {
+        Write-Fail ("Could not start the tunnel task: {0}" -f $_.Exception.Message)
+        return 1
+    }
+
+    Write-Info 'Waiting for the tunnel to report its URL...'
+    $deadline = (Get-Date).AddSeconds(75)
+    $url = $null
+    $assigned = $null
+    while ((Get-Date) -lt $deadline) {
+        $st = Get-TunnelState
+        if ($st -and $st.Url) { $url = $st.Url; $assigned = $st.Requested; break }
+        if ((Get-StackTaskState -Name $TunnelTask) -eq 'Ready' -and (Test-Path -LiteralPath $TunnelLog)) {
+            break   # task already exited and never wrote state
+        }
+        Start-Sleep -Milliseconds 800
+    }
+
     if (-not $url) {
-        Write-Fail 'localtunnel did not report a URL within 60 seconds.'
+        Write-Fail 'The tunnel did not report a URL in time.'
         Show-LogTail -Path $TunnelErr -Lines 15
         Show-LogTail -Path $TunnelLog -Lines 15
         return 1
     }
 
-    Write-TunnelState -Url $url -ProcessId $proc.Id -Requested $Subdomain
-    Show-TunnelBanner -Url $url -Requested $Subdomain
-
-    if ($Foreground) {
-        Write-Info 'Following tunnel output. Ctrl+C stops following (the tunnel keeps running).'
-        Get-Content -LiteralPath $TunnelLog -Wait -ErrorAction SilentlyContinue
-    }
+    Show-TunnelBanner -Url $url -Requested $assigned
     return 0
 }
 
 function Stop-Tunnel {
     $did = $false
+
+    # Ending the task tears down the localtunnel process tree it owns.
+    if ((Get-StackTaskState -Name $TunnelTask) -eq 'Running') {
+        Write-Info ("Stopping task '{0}'..." -f $TunnelTask)
+        try { Stop-ScheduledTask -TaskName $TunnelTask } catch { Write-Warn $_.Exception.Message }
+        Start-Sleep -Seconds 2
+        $did = $true
+    }
 
     $s = Get-TunnelState
     if ($s -and $s.Pid) {
@@ -807,6 +922,7 @@ switch ($Action) {
         exit 0
     }
     '_run'     { exit (Invoke-StackRun) }
+    '_tunnel_run' { exit (Invoke-TunnelRun) }
     default    { exit (Show-Usage) }
 }
 
