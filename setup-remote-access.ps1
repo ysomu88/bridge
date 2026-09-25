@@ -345,25 +345,43 @@ if (Test-Path -LiteralPath $RemoteScript) {
     if ($RunWithoutLogon) {
         Write-Host ''
         Write-Host 'Enter your Windows password so Task Scheduler can start the stack' -ForegroundColor Yellow
-        Write-Host 'even when nobody is logged on at this PC.' -ForegroundColor Yellow
+        Write-Host 'AND the public tunnel even when nobody is logged on at this PC.' -ForegroundColor Yellow
         $cred = Get-Credential -UserName ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
-            -Message 'Windows password for the BridgeStack task'
+            -Message 'Windows password for the Bridge tasks'
+
         if ($cred) {
             $plain = $cred.GetNetworkCredential().Password
-            $changeOut = & schtasks.exe /Change /TN $TaskName /RU $cred.UserName /RP $plain 2>&1
-            $changeOut | ForEach-Object { Write-Log ('schtasks: ' + $_) }
-            $verify = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-            if ($verify -and $verify.Principal.LogonType -eq 'Password') {
-                Log-Ok 'Task now runs whether or not you are logged on.'
-            } else {
-                Log-Warn 'Could not confirm the logon type - check with: schtasks /query /tn BridgeStack /v /fo list'
+
+            # The tunnel task has to exist before it can be converted, and it has
+            # to be converted too - otherwise a cold boot would bring up the server
+            # with no public URL, which is the half-working state to avoid.
+            $tunnelOut = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                -File $RemoteScript ensure-tunnel-task 2>&1
+            $tunnelOut | ForEach-Object { Write-Log ('task: ' + $_) }
+
+            $converted = 0
+            foreach ($task in @($TaskName, 'BridgeTunnel')) {
+                $changeOut = & schtasks.exe /Change /TN $task /RU $cred.UserName /RP $plain 2>&1
+                $changeOut | ForEach-Object { Write-Log ('schtasks: ' + $_) }
+
+                $verify = Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+                if ($verify -and $verify.Principal.LogonType -eq 'Password') {
+                    $converted++
+                    Log-Ok ("Task '{0}' now runs whether or not you are logged on." -f $task)
+                } else {
+                    Log-Warn ("Could not confirm the logon type for '{0}' - check: schtasks /query /tn {0} /v /fo list" -f $task)
+                }
+            }
+
+            if ($converted -eq 2) {
+                Log-Ok 'Someone can now power this PC on with nobody logged in, and you can start it from your phone.'
             }
         } else {
-            Log-Warn 'No credential entered - the task still needs an interactive logon.'
+            Log-Warn 'No credential entered - both tasks still need an interactive logon.'
         }
     } else {
-        Log-Info 'Task left as on-demand with an Interactive logon.'
-        Log-Warn 'If this PC boots to the login screen and nobody logs in, the task cannot start.'
+        Log-Info 'Tasks left as on-demand with an Interactive logon.'
+        Log-Warn 'If this PC boots to the login screen and nobody logs in, the tasks cannot start.'
         Log-Warn 'Fix that by re-running this script with -RunWithoutLogon (or by logging in first).'
     }
 } else {
