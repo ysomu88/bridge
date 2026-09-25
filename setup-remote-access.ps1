@@ -70,6 +70,14 @@ function Log-Info([string]$t) { Write-Log $t 'INFO' }
 function Log-Warn([string]$t) { Write-Log $t 'WARN' }
 function Log-Fail([string]$t) { Write-Log $t 'FAIL' }
 
+function Write-Summary {
+    # Prints to the console AND appends to the log, so the "what do I do next"
+    # block survives the elevated window closing.
+    param([string]$Text = '', [string]$Color = 'Gray')
+    if ($Text) { Write-Host $Text -ForegroundColor $Color }
+    Add-Content -LiteralPath $LogFile -Value $Text -Encoding utf8
+}
+
 # ---------------------------------------------------------------------------
 # Elevation - the steps below all need administrator rights
 # ---------------------------------------------------------------------------
@@ -82,7 +90,10 @@ if (-not $isAdmin) {
     Write-Host 'Relaunching elevated - accept the UAC prompt...' -ForegroundColor Yellow
 
     $reArgs = @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass'
+        '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        # Keep the elevated window open after the script finishes, otherwise it
+        # closes instantly and you never get to read the summary below.
+        '-NoExit'
     )
     if ($PublicKey)       { $reArgs += @('-PublicKey', ('"' + $PublicKey + '"')) }
     if ($GenerateKeyPair) { $reArgs += '-GenerateKeyPair' }
@@ -355,31 +366,37 @@ if (Test-Path -LiteralPath $tailscaleExe) {
 }
 $sshHost = if ($tsName) { $tsName } else { '<this-pc>.<your-tailnet>.ts.net' }
 
-Write-Host ''
-Write-Host '==============================================================' -ForegroundColor Cyan
-Write-Host '   Setup finished' -ForegroundColor Cyan
-Write-Host '==============================================================' -ForegroundColor Cyan
-Write-Host ''
-Write-Host '  NEXT STEPS' -ForegroundColor White
-Write-Host ''
-Write-Host '  1. On your phone: install Tailscale, sign in with the SAME account'
-Write-Host '     you used on this PC, and turn the VPN switch ON.'
-Write-Host ''
-Write-Host '  2. On your phone: install an SSH app (Termius is a good free one).'
-Write-Host ('     Add a host:  address {0}   user {1}' -f $sshHost, $env:USERNAME) -ForegroundColor Green
-if ($privateKey) {
-    Write-Host ('     Import this private key into the app: {0}' -f $privateKey) -ForegroundColor Green
+Write-Summary ''
+Write-Summary '==============================================================' 'Cyan'
+Write-Summary '   Setup finished' 'Cyan'
+Write-Summary '==============================================================' 'Cyan'
+Write-Summary ''
+Write-Summary '  NEXT STEPS' 'White'
+Write-Summary ''
+Write-Summary '  1. On your phone: install Tailscale, sign in with the SAME account'
+Write-Summary '     you used on this PC, and turn the VPN switch ON.'
+Write-Summary ''
+Write-Summary '  2. On your phone: install an SSH app (Termius is a good free one).'
+Write-Summary ('     Add a host:  address {0}   user {1}' -f $sshHost, $env:USERNAME) 'Green'
+if ($env:USERNAME -match '\s') {
+    Write-Summary '     NOTE: that username contains a space - quote it in the app.' 'Yellow'
 }
-Write-Host ''
-Write-Host '  3. Save these as one-tap snippets in the app:' -ForegroundColor White
-Write-Host '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" status'
-Write-Host '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" start'
-Write-Host '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" stop'
-Write-Host '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" shutdown -Minutes 5'
-Write-Host ''
-Write-Host '  4. To use the translation UI from your phone, open:' -ForegroundColor White
-Write-Host ('       http://{0}:8000' -f $sshHost) -ForegroundColor Green
-Write-Host ''
-Write-Host ('  Full log: {0}' -f $LogFile) -ForegroundColor DarkGray
-Write-Host ''
+if ($privateKey) {
+    Write-Summary ('     Import this private key into the app: {0}' -f $privateKey) 'Green'
+} else {
+    Write-Summary '     Your own key was authorised via -PublicKey - nothing to import.' 'Green'
+}
+Write-Summary ''
+Write-Summary '  3. Save these as one-tap snippets in the app:' 'White'
+Write-Summary '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" status'
+Write-Summary '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" start'
+Write-Summary '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" stop'
+Write-Summary '       powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" shutdown -Minutes 5'
+Write-Summary ''
+Write-Summary '  4. To use the translation UI from your phone, open:' 'White'
+Write-Summary ('       http://{0}:8000' -f $sshHost) 'Green'
+Write-Summary ''
+Write-Summary ('  Full log: {0}' -f $LogFile) 'DarkGray'
+Write-Summary ''
+Write-Summary '  (This summary is also written to the log above, in case this window closes.)'
 Log-Ok 'Done. See REMOTE_ACCESS.md for the walkthrough and troubleshooting.'

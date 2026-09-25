@@ -224,6 +224,16 @@ installed/logged in. Also check the phone's Tailscale VPN switch is on.
 immediately, something else (e.g. a leftover `start.ps1` window) is respawning
 it.
 
+**Running `setup-remote-access.ps1` opened it in Notepad instead of running it**
+Notepad is the default handler for `.ps1` files on Windows, so launching the file
+*as a file* — a double-click, from `cmd`, or via the Run box — opens the source
+instead of executing it. It only runs when you type it at a **PowerShell prompt**.
+If in doubt, use the explicit form, which always executes:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-remote-access.ps1" -GenerateKeyPair
+```
+
 **`shutdown` prints shutdown.exe's usage text**
 You're on an older copy of the script — the `/c` comment used to contain double
 quotes, which mangles the command line. Pull the current `bridge-remote.ps1`.
