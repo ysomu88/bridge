@@ -206,6 +206,9 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 | `index.html` | Browser client — mic capture, VAD, subtitle display, audio playback |
 | `start.ps1` | One-click local launch — boots Ollama, waits for it, starts the server |
 | `run_bridge.ps1` | One-click remote tunnel launcher (localtunnel → https://bridge.loca.lt) |
+| `bridge-remote.ps1` | Remote control — start / stop / status / logs / shutdown the stack from your phone (see `REMOTE_ACCESS.md`) |
+| `setup-remote-access.ps1` | One-time elevated setup — Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
+| `REMOTE_ACCESS.md` | Phone-control walkthrough — setup, one-tap snippets, security, troubleshooting |
 | `requirements.txt` | Python dependencies |
 | `DOCUMENTATION.md` | Full architecture and technical reference |
 | `voice_samples/` | Locally recorded voice cloning reference clips (gitignored, swept at startup/shutdown) |
