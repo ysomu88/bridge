@@ -37,12 +37,20 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'shutdown', 'cancel', 'help', 'ensure-task', '_run')]
+    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'tunnel', 'shutdown', 'cancel', 'help', 'ensure-task', '_run')]
     [string]$Action = 'status',
 
-    # start: run the stack in this console instead of via the scheduled task.
+    # start/tunnel: run in this console instead of in the background.
     # Useful for local debugging - NOT usable over SSH (dies with the session).
     [switch]$Foreground,
+
+    # start: do NOT open a public localtunnel URL (personal use over Tailscale only).
+    [switch]$NoTunnel,
+
+    # start/tunnel: preferred public subdomain. If localtunnel finds it taken it
+    # assigns a random one instead - the URL that was actually assigned is always
+    # printed, so a collision is never a guessing game.
+    [string]$Subdomain = 'bridge',
 
     # stop: leave Ollama running (only stop the Bridge FastAPI server).
     [switch]$KeepOllama,
@@ -68,6 +76,9 @@ $LogDir     = Join-Path $RepoRoot 'remote_logs'
 $ServerLog  = Join-Path $LogDir 'server.log'
 $ServerErr  = Join-Path $LogDir 'server.err.log'
 $WorkerLog  = Join-Path $LogDir 'worker.log'
+$TunnelLog  = Join-Path $LogDir 'tunnel.log'
+$TunnelErr  = Join-Path $LogDir 'tunnel.err.log'
+$TunnelState = Join-Path $LogDir 'tunnel.json'
 $OllamaLog  = Join-Path $LogDir 'ollama.log'
 $OllamaErr  = Join-Path $LogDir 'ollama.err.log'
 $SelfPath   = $PSCommandPath
@@ -388,9 +399,173 @@ function Show-Status {
     } else {
         Write-Info 'Server is down. Start it with: .\bridge-remote.ps1 start'
     }
+
+    # Public tunnel
+    $tun = Get-TunnelState
+    if ($tun) {
+        Write-Host ''
+        if (Test-TunnelRunning) {
+            Write-Ok ("Public URL     : {0}   <- share this with other users" -f $tun.Url)
+        } else {
+            Write-Warn ("Public tunnel has stopped (was {0}). Re-open with: .\bridge-remote.ps1 tunnel" -f $tun.Url)
+        }
+    }
+
     Write-Host ''
     Write-Info ("Logs: {0}" -f $LogDir)
     Write-Host ''
+}
+
+# ---------------------------------------------------------------------------
+# Public tunnel (localtunnel)
+#
+# Publishes http://localhost:8000 at https://<subdomain>.loca.lt so other people
+# can use the server without joining your tailnet. Verified against localtunnel
+# v2: it serves the page directly with no IP-password interstitial, and prints
+# "your url is: https://<name>.loca.lt" on stdout once assigned.
+#
+# The requested subdomain is only a preference. If it is taken, localtunnel
+# silently assigns a random name - so we read the URL back out of its output and
+# always show what was ACTUALLY assigned, flagging the collision.
+# ---------------------------------------------------------------------------
+$script:TunnelUrlPattern = 'https://[A-Za-z0-9][A-Za-z0-9.-]*\.loca\.lt'
+
+function Get-TunnelState {
+    if (-not (Test-Path -LiteralPath $TunnelState)) { return $null }
+    try {
+        return (Get-Content -LiteralPath $TunnelState -Raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Test-TunnelRunning {
+    $s = Get-TunnelState
+    if (-not $s) { return $false }
+    if ($s.Pid -and (Get-Process -Id ([int]$s.Pid) -ErrorAction SilentlyContinue)) { return $true }
+    return $false
+}
+
+# Poll localtunnel's output until it reports a URL, then return that URL.
+function Wait-TunnelUrl {
+    param([int]$TimeoutSec = 60)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $TunnelLog) {
+            $hit = Select-String -Path $TunnelLog -Pattern $script:TunnelUrlPattern -AllMatches |
+                Select-Object -Last 1
+            if ($hit) {
+                return ([regex]::Match($hit.Line, $script:TunnelUrlPattern)).Value
+            }
+        }
+        Start-Sleep -Milliseconds 800
+    }
+    return $null
+}
+
+function Write-TunnelState {
+    param([string]$Url, [int]$ProcessId, [string]$Requested)
+    [pscustomobject]@{
+        Url       = $Url
+        Pid       = $ProcessId
+        Requested = $Requested
+        Started   = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    } | ConvertTo-Json | Set-Content -LiteralPath $TunnelState -Encoding utf8
+}
+
+function Show-TunnelBanner {
+    param([string]$Url, [string]$Requested)
+    $assigned = ([uri]$Url).Host -replace '\.loca\.lt$', ''
+    Write-Host ''
+    Write-Host ('  ' + ('=' * 58)) -ForegroundColor DarkCyan
+    Write-Host ("   PUBLIC URL  :  " + $Url) -ForegroundColor Green
+    if ($Requested -and ($assigned -ne $Requested)) {
+        Write-Host ("   NOTE: '" + $Requested + "' was already taken, so localtunnel assigned '" +
+                    $assigned + "' instead.") -ForegroundColor Yellow
+    }
+    Write-Host ('  ' + ('=' * 58)) -ForegroundColor DarkCyan
+    Write-Host '   Share that link. No password is needed (localtunnel v2 serves the page directly).' -ForegroundColor Gray
+    Write-Host '   NOTE: it is a PUBLIC url - anyone with the link can use this server.' -ForegroundColor Yellow
+    Write-Host ''
+}
+
+function Start-Tunnel {
+    if (Test-TunnelRunning) {
+        $s = Get-TunnelState
+        Write-Host ''
+        Write-Info 'A public tunnel is already running.'
+        Show-TunnelBanner -Url $s.Url -Requested $s.Requested
+        return 0
+    }
+
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    Remove-Item -LiteralPath $TunnelLog -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $TunnelErr -Force -ErrorAction SilentlyContinue
+
+    $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
+    if (-not $npx) { $npx = Get-Command npx -ErrorAction SilentlyContinue }
+    if (-not $npx) {
+        Write-Fail 'npx not found - install Node.js to use the public tunnel.'
+        return 1
+    }
+
+    $tunnelArgs = @('localtunnel', '--port', $BridgePort, '--subdomain', $Subdomain)
+
+    if ($Foreground) {
+        Write-Info 'Starting public tunnel (output is followed in this console)...'
+        $proc = Start-Process -FilePath $npx.Source -ArgumentList $tunnelArgs `
+            -NoNewWindow -PassThru -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
+    } else {
+        Write-Info 'Starting public tunnel in the background...'
+        $proc = Start-Process -FilePath $npx.Source -ArgumentList $tunnelArgs `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
+    }
+
+    $url = Wait-TunnelUrl -TimeoutSec 60
+    if (-not $url) {
+        Write-Fail 'localtunnel did not report a URL within 60 seconds.'
+        Show-LogTail -Path $TunnelErr -Lines 15
+        Show-LogTail -Path $TunnelLog -Lines 15
+        return 1
+    }
+
+    Write-TunnelState -Url $url -ProcessId $proc.Id -Requested $Subdomain
+    Show-TunnelBanner -Url $url -Requested $Subdomain
+
+    if ($Foreground) {
+        Write-Info 'Following tunnel output. Ctrl+C stops following (the tunnel keeps running).'
+        Get-Content -LiteralPath $TunnelLog -Wait -ErrorAction SilentlyContinue
+    }
+    return 0
+}
+
+function Stop-Tunnel {
+    $did = $false
+
+    $s = Get-TunnelState
+    if ($s -and $s.Pid) {
+        $p = Get-Process -Id ([int]$s.Pid) -ErrorAction SilentlyContinue
+        if ($p) {
+            Write-Info ("Closing public tunnel (PID {0})..." -f $p.Id)
+            $null = Invoke-Native 'taskkill.exe' @('/PID', [string]$p.Id, '/T', '/F')
+            $did = $true
+        }
+    }
+
+    # npx spawns a child node process, and a tunnel started from a foreground
+    # console may not have a recorded PID - so also sweep by command line.
+    $stray = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'localtunnel' })
+    foreach ($n in $stray) {
+        Write-Info ("Closing stray localtunnel process (PID {0})..." -f $n.ProcessId)
+        $null = Invoke-Native 'taskkill.exe' @('/PID', [string]$n.ProcessId, '/T', '/F')
+        $did = $true
+    }
+
+    Remove-Item -LiteralPath $TunnelState -Force -ErrorAction SilentlyContinue
+    if ($did) { Write-Ok 'Public tunnel closed.' } else { Write-Info 'No public tunnel was running.' }
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -460,6 +635,15 @@ function Start-Bridge {
     }
 
     Write-Ok 'Bridge is up.'
+
+    # Public URL for other people. On by default; -NoTunnel keeps the server
+    # reachable only over your tailnet.
+    if ($NoTunnel) {
+        Write-Info 'Public tunnel skipped (-NoTunnel) - reachable over Tailscale only.'
+    } else {
+        $null = Start-Tunnel
+    }
+
     Show-Status
     return 0
 }
@@ -469,6 +653,9 @@ function Start-Bridge {
 # ---------------------------------------------------------------------------
 function Stop-Bridge {
     $did = $false
+
+    # Take the public URL down first, so nobody can reach a half-dying server.
+    $null = Stop-Tunnel
 
     if ((Get-StackTaskState) -eq 'Running') {
         Write-Info ("Stopping scheduled task '{0}'..." -f $TaskName)
@@ -582,10 +769,13 @@ function Show-Usage {
     Write-Head 'bridge-remote.ps1 - usage'
     @'
   .\bridge-remote.ps1 status                    Health + the URL for your phone
-  .\bridge-remote.ps1 start                     Start Ollama + the Bridge server
+  .\bridge-remote.ps1 start                     Start Ollama + server + public URL
+  .\bridge-remote.ps1 start -NoTunnel           Same, but no public URL (Tailscale only)
+  .\bridge-remote.ps1 start -Subdomain myname   Ask for a specific public subdomain
   .\bridge-remote.ps1 start -ReadyTimeout 600   Slow first model load
-  .\bridge-remote.ps1 stop                      Stop server + Ollama
-  .\bridge-remote.ps1 stop -KeepOllama          Stop only the Bridge server
+  .\bridge-remote.ps1 tunnel                    Open the public URL on its own
+  .\bridge-remote.ps1 stop                      Close the public URL, server + Ollama
+  .\bridge-remote.ps1 stop -KeepOllama          Close the URL + server, keep Ollama
   .\bridge-remote.ps1 restart                   Stop, then start
   .\bridge-remote.ps1 logs -Tail 80             Tail the logs
   .\bridge-remote.ps1 shutdown -Minutes 5       Power the PC off in 5 minutes
@@ -607,6 +797,7 @@ switch ($Action) {
     'restart'  { $null = Stop-Bridge; Start-Sleep -Seconds 2; exit (Start-Bridge) }
     'status'   { Show-Status; exit 0 }
     'logs'     { Show-Logs; exit 0 }
+    'tunnel'   { exit (Start-Tunnel) }
     'shutdown' { exit (Invoke-ShutdownAction) }
     'cancel'   { exit (Invoke-CancelShutdown) }
     'help'     { exit (Show-Usage) }

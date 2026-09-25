@@ -190,6 +190,63 @@ the key line from `C:\ProgramData\ssh\administrators_authorized_keys`.
 
 ---
 
+## Sharing with other people (public URL)
+
+`start` also opens a **public** [localtunnel](https://loca.lt) URL, so anyone you
+send the link to can use the server without installing Tailscale:
+
+```powershell
+.\bridge-remote.ps1 start
+```
+
+```
+==============================================================
+ PUBLIC URL  :  https://bridge.loca.lt
+==============================================================
+ Share that link. No password is needed (localtunnel v2 serves the page directly).
+ NOTE: it is a PUBLIC url - anyone with the link can use this server.
+```
+
+- `status` always shows the current public URL (or warns if the tunnel dropped)
+- `stop` closes the public URL **first**, then the server and Ollama
+- `tunnel` opens the public URL on its own, without touching the server
+- `start -NoTunnel` skips it entirely — private to your tailnet
+- `start -Subdomain myname` asks for a different subdomain
+
+### Subdomain collisions are handled for you
+
+`--subdomain bridge` is only a *preference*. If someone else already holds that
+name, localtunnel silently assigns a random one — so the script reads the URL back
+out of localtunnel's output and always shows what was **actually** assigned:
+
+```
+PUBLIC URL  :  https://serious-snake-26.loca.lt
+NOTE: 'bridge' was already taken, so localtunnel assigned 'serious-snake-26' instead.
+```
+
+You never have to guess which URL is live.
+
+### Good to know
+
+- **No password.** localtunnel v2 serves the page directly; the old
+  IP-password interstitial is gone.
+- **It is genuinely public.** There is no auth in front of it. Treat the URL as
+  public and only share it with people you trust — `start -NoTunnel` is the
+  private option.
+- **The tunnel dies with the stack.** If the PC reboots, or someone runs `stop`,
+  the URL goes dead. Re-run `start` to bring it back (the subdomain may change).
+- **Capacity is shared.** The GPU is serialised behind a single lock, so keep it
+  to one or two people at a time or latency will show.
+
+### For a trusted person, prefer Tailscale sharing
+
+In the Tailscale admin console you can share *just* this machine with an external
+email address. They install Tailscale, sign in with their own account, and get
+access to `bridge-pc` only — no public URL, no localtunnel. Reach it at
+`http://bridge-pc:8000`.
+
+---
+
 ## Troubleshooting
 
 **`Could not start the task ... user is not logged on`**
