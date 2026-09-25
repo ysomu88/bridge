@@ -109,14 +109,40 @@ Add a new host:
 
 ### 4. On the phone — save the snippets
 
-In Termius, open the host and save these as **snippets** so they become one-tap
-buttons (Termius → *Snippets* → *New*; you can pin them to the host):
+Once the repo folder is on your `PATH` (the setup script does this), there is a
+short `bridge` command, so you never paste a long path:
+
+| You type | It runs |
+|---|---|
+| `bridge` | `status` — the default when you give no action |
+| `bridge start` | Ollama + server + public URL |
+| `bridge start -NoTunnel` | Ollama + server, no public URL |
+| `bridge stop` | Close the public URL, server and Ollama |
+| `bridge stop -KeepOllama` | Close the URL + server, keep Ollama running |
+| `bridge restart` | `stop` then `start` |
+| `bridge logs` | Tail the logs (`bridge logs -Tail 80` for more) |
+| `bridge tunnel` | Open the public URL on its own |
+| `bridge shutdown 5` | Power the PC off in 5 minutes |
+| `bridge cancel` | Abort a pending shutdown |
+| `bridge help` | Full usage |
+
+**Save these as Termius snippets** so they become one-tap buttons:
+
+1. Open the host in Termius → **Snippets** → **+** (new snippet)
+2. Give it a short name (`Start`, `Stop`, `Status`, `Shutdown`, `Logs`)
+3. Paste the matching command (`bridge start`, etc.) into the body
+4. Save, then **pin** the ones you use often so they sit at the top
+
+Tapping a pinned snippet runs it in the current session. If your SSH shell is
+`cmd.exe` rather than PowerShell, `bridge` still works — it is a `.cmd` file, so
+it does not depend on the shell at all.
+
+**Reconnect after setup.** The `PATH` change only applies to new SSH sessions, so
+disconnect and reconnect in Termius once. If `bridge` is not found, fall back to
+the long form:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" status
-powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" start
-powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" stop
-powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\Documents\PythonScripts\bridge\bridge-remote.ps1" shutdown -Minutes 5
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\<you>\Documents\PythonScripts\bridge\bridge-remote.ps1" status
 ```
 
 ---
@@ -378,6 +404,7 @@ Once the PC is on, everything in this document works unchanged.
 | File | Purpose |
 |---|---|
 | `bridge-remote.ps1` | The remote control script (all actions) |
+| `bridge.cmd` | Short entry point — with the folder on your `PATH`, just type `bridge start`, `bridge stop`, … from any shell |
 | `setup-remote-access.ps1` | One-time elevated setup (Tailscale, OpenSSH, keys, task) |
 | `restart-tailscale.ps1` | Recovery helper — restarts a Tailscale backend wedged in `NoState` |
 | `diagnose-ssh-firewall.ps1` | Troubleshooting — firewall/adapter report, then the minimum fix and a re-test |
