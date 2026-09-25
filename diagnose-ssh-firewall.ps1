@@ -231,7 +231,7 @@ Write-Host ''
 
 if ($after) {
     Write-Host '  FIXED. You can now connect from your phone.' -ForegroundColor Green
-    Write-Host ('  Host address : bridge-pc   (port 22, user "Yeshwanth Somu")') -ForegroundColor Green
+    Write-Host ('  Host address : bridge-pc   (port 22, user "{0}")' -f $env:USERNAME) -ForegroundColor Green
     Write-Host ''
     Write-Host '  To undo later:'
     Write-Host '    Get-NetFirewallRule -Name Bridge-SSH-TailscaleIface,Bridge-SSH-TailscaleCIDR | Remove-NetFirewallRule'

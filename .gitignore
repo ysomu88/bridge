@@ -45,3 +45,32 @@ run_bridge.ps1
 # ── Remote control runtime artifacts (logs, generated keys) ────────────────
 remote_logs/
 *bridge_phone_ed25519*
+bridge-pubkey.txt
+
+# ── Secrets and credentials — NEVER commit ────────────────────────────────
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.kdbx
+*.token
+huggingface.token
+.env.*
+!.env.example
+
+# ── Logs produced by any tool ─────────────────────────────────────────────
+*.log
+
+# ── Local tool / build caches (be explicit: some of these only
+#    self-ignore via a .gitignore *inside* the folder, which breaks
+#    the moment that file is deleted) ──────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# ── Local virtualenvs ─────────────────────────────────────────────────────
+activate/
+

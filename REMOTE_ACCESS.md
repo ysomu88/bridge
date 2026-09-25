@@ -99,9 +99,9 @@ Add a new host:
 | Username | your Windows username |
 | Key | the private key printed by setup (`~\.ssh\bridge_phone_ed25519`), or the key you generated in the app |
 
-> ⚠️ **Your Windows username contains a space** (`Yeshwanth Somu`). Most apps and
-> the `ssh` command accept that if you quote it:
-> `ssh "Yeshwanth Somu"@desktop.tailxxxx.ts.net`
+> ⚠️ **Windows usernames often contain a space** (e.g. `Firstname Lastname`).
+> Most apps and the `ssh` command accept that if you quote it:
+> `ssh "Firstname Lastname"@desktop.tailxxxx.ts.net`
 > If your app refuses it, either (a) quote the username in the host field, or
 > (b) create a second local Windows account without a space (e.g. `bridge`) and
 > authorise the key for it instead. Scripts launched as that user still work
@@ -287,8 +287,8 @@ You never have to guess which URL is live.
 
 In the Tailscale admin console you can share *just* this machine with an external
 email address. They install Tailscale, sign in with their own account, and get
-access to `bridge-pc` only — no public URL, no localtunnel. Reach it at
-`http://bridge-pc:8000`.
+access to that one PC only — no public URL, no localtunnel. Reach it at
+`http://<that-pc>:8000`.
 
 ---
 
@@ -310,7 +310,7 @@ Windows password so the task can start with nobody logged in.
 **SSH connects but `bridge-remote.ps1` isn't found**
 `$HOME` in the snippet resolves to the SSH user's profile. If you created a
 second Windows account, use the absolute path instead:
-`C:\Users\Yeshwanth Somu\Documents\PythonScripts\bridge\bridge-remote.ps1`.
+`C:\Users\<you>\Documents\PythonScripts\bridge\bridge-remote.ps1`.
 
 **`start` reports the port never opened**
 Read the log tail it prints. The most common causes are a missing `llama3.2`
