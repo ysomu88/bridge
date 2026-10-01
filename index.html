@@ -353,41 +353,8 @@
       <div class="wordmark-icon">⇌</div>
       <h1>Bridge</h1>
     </div>
-    <p class="tagline">Real-time voice translation and playback · Fully local · Fully yours</p>
+    <p class="tagline">Real-time translation · In your own voice</p>
   </header>
-
-  <!-- Language selector -->
-  <div class="lang-selector-row">
-    <label>From</label>
-    <select class="lang-select" id="select-source">
-      <option value="en" selected>🇺🇸 English</option>
-      <option value="es">🇪🇸 Spanish</option>
-      <option value="fr">🇫🇷 French</option>
-      <option value="it">🇮🇹 Italian</option>
-      <option value="ja">🇯🇵 Japanese</option>
-      <option value="zh">🇨🇳 Chinese</option>
-      <option value="ko">🇰🇷 Korean</option>
-      <option value="pt">🇧🇷 Portuguese</option>
-      <option value="hi">🇮🇳 Hindi</option>
-      <option value="de">🇩🇪 German</option>
-      <option value="te">🇮🇳 Telugu</option>
-    </select>
-    <button class="lang-swap-btn" id="btn-swap" title="Swap languages">⇌</button>
-    <label>To</label>
-    <select class="lang-select" id="select-target">
-      <option value="en">🇺🇸 English</option>
-      <option value="es" selected>🇪🇸 Spanish</option>
-      <option value="fr">🇫🇷 French</option>
-      <option value="it">🇮🇹 Italian</option>
-      <option value="ja">🇯🇵 Japanese</option>
-      <option value="zh">🇨🇳 Chinese</option>
-      <option value="ko">🇰🇷 Korean</option>
-      <option value="pt">🇧🇷 Portuguese</option>
-      <option value="hi">🇮🇳 Hindi</option>
-      <option value="de">🇩🇪 German</option>
-      <option value="te">🇮🇳 Telugu</option>
-    </select>
-  </div>
 
   <!-- Onboarding hint -->
   <div class="onboard" id="onboard">
@@ -397,8 +364,8 @@
     </button>
     <div class="onboard-body" id="onboard-body" hidden>
       <ol>
-        <li><strong>Pick your languages</strong> — <em>From</em> is what you speak, <em>To</em> is what you hear. Use <b>⇌</b> to swap.</li>
         <li><strong>(Optional) Clone your voice</strong> — read the sample aloud for ~15s in a quiet room, wait for <em>Voice ready ✓</em>, and make sure <b>Use my cloned voice</b> is checked.</li>
+        <li><strong>Pick your languages</strong> — <em>From</em> is what you speak, <em>To</em> is what you hear. Use <b>⇌</b> to swap.</li>
         <li><strong>▶ Start Listening</strong> — click the button, then grant mic access when prompted. That's all the setup you need.</li>
         <li><strong>Just speak</strong> — Bridge listens continuously. As soon as you pause after a sentence, it translates automatically and reads the result back — no buttons to press between sentences. You'll see <em>Processing…</em> while it works.</li>
         <li><strong>⏹ Stop</strong> only when you're finished.</li>
@@ -442,6 +409,44 @@
     </p>
   </div>
 
+  <!-- Language selector -->
+  <div class="lang-selector-row">
+    <label>From</label>
+    <select class="lang-select" id="select-source">
+      <option value="en" selected>🇺🇸 English</option>
+      <option value="es">🇪🇸 Spanish</option>
+      <option value="fr">🇫🇷 French</option>
+      <option value="it">🇮🇹 Italian</option>
+      <option value="ja">🇯🇵 Japanese</option>
+      <option value="zh">🇨🇳 Chinese</option>
+      <option value="ko">🇰🇷 Korean</option>
+      <option value="pt">🇧🇷 Portuguese</option>
+      <option value="hi">🇮🇳 Hindi</option>
+      <option value="de">🇩🇪 German</option>
+      <option value="te">🇮🇳 Telugu</option>
+    </select>
+    <button class="lang-swap-btn" id="btn-swap" title="Swap languages">⇌</button>
+    <label>To</label>
+    <select class="lang-select" id="select-target">
+      <option value="en">🇺🇸 English</option>
+      <option value="es" selected>🇪🇸 Spanish</option>
+      <option value="fr">🇫🇷 French</option>
+      <option value="it">🇮🇹 Italian</option>
+      <option value="ja">🇯🇵 Japanese</option>
+      <option value="zh">🇨🇳 Chinese</option>
+      <option value="ko">🇰🇷 Korean</option>
+      <option value="pt">🇧🇷 Portuguese</option>
+      <option value="hi">🇮🇳 Hindi</option>
+      <option value="de">🇩🇪 German</option>
+      <option value="te">🇮🇳 Telugu</option>
+    </select>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-start" id="btn-start">▶ Start Listening</button>
+    <button class="btn btn-stop"  id="btn-stop" disabled>⏹ Stop</button>
+  </div>
+
   <div class="status-bar">
     <div class="status-indicator">
       <div class="dot" id="status-dot"></div>
@@ -451,11 +456,6 @@
       <span id="voice-route" class="voice-route">🗣️ Preset</span>
       <span id="chunk-count" style="font-size:0.72rem;">0 chunks sent</span>
     </div>
-  </div>
-
-  <div class="controls">
-    <button class="btn btn-start" id="btn-start">▶ Start Listening</button>
-    <button class="btn btn-stop"  id="btn-stop" disabled>⏹ Stop</button>
   </div>
 
   <!-- Mic level bar with live dB readout -->
