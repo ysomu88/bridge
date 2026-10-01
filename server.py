@@ -732,18 +732,40 @@ async def _synthesise_chatterbox(
 
 
 async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket: WebSocket, loop, state: SessionState) -> None:
-    """If cloning fails for any reason, fall back to the normal preset-voice pipeline."""
-    # Surface the fallback to the client so it can switch its voice indicator.
-    try:
-        await websocket.send_text(json.dumps({
-            "type": "voice_fallback",
-            "reason": "Voice cloning failed — using a preset voice instead.",
-        }))
-    except Exception:
-        pass
-
+    """Cloning could not be used for this utterance — use the preset-voice pipeline."""
     PIPER_LANGUAGES = {"ko", "de"}
-    if target_lang in PIPER_LANGUAGES and target_lang in piper_voices:
+    KOKORO_LANG_MAP = {
+        "en": ("en-us", "af_heart"), "es": ("es", "ef_dora"), "fr": ("fr-fr", "ff_siwis"),
+        "it": ("it", "if_sara"), "ja": ("ja", "jf_alpha"), "zh": ("cmn", "zf_xiaobei"),
+        "hi": ("hi", "hf_alpha"), "pt": ("pt-br", "pf_dora"),
+    }
+
+    async def _notify(reason: str) -> None:
+        # Tell the client so it can move its voice indicator off the clone.
+        try:
+            await websocket.send_text(json.dumps({"type": "voice_fallback", "reason": reason}))
+        except Exception:
+            pass
+
+    # No engine has a voice for this language (Telugu, for example). Falling
+    # through to Kokoro would speak it with the ENGLISH default voice, because
+    # `KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))` silently
+    # substitutes the English entry. That is worse than silence — the text comes
+    # out sounding like a different language, which reads as "my clone stopped
+    # working". The non-cloned path already handles this via
+    # KOKORO_UNSUPPORTED, so match it here and stay subtitle-only either way.
+    piper_ok = target_lang in PIPER_LANGUAGES and target_lang in piper_voices
+    if not piper_ok and target_lang not in KOKORO_LANG_MAP:
+        logger.warning(
+            f"No TTS engine supports '{target_lang}' — subtitles only "
+            f"(a cloned voice cannot be used for it either)."
+        )
+        await _notify("No voice exists for this language yet — subtitles only.")
+        return
+
+    await _notify("Using a preset voice instead of the cloned one.")
+
+    if piper_ok:
         await _synthesise_piper(text, target_lang, websocket, loop, state)
         return
 
@@ -751,12 +773,8 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
         logger.warning("No fallback TTS engine available — subtitles only.")
         return
 
-    KOKORO_LANG_MAP = {
-        "en": ("en-us", "af_heart"), "es": ("es", "ef_dora"), "fr": ("fr-fr", "ff_siwis"),
-        "it": ("it", "if_sara"), "ja": ("ja", "jf_alpha"), "zh": ("cmn", "zf_xiaobei"),
-        "hi": ("hi", "hf_alpha"), "pt": ("pt-br", "pf_dora"),
-    }
-    kokoro_lang, voice_code = KOKORO_LANG_MAP.get(target_lang, ("en-us", "af_heart"))
+    # Safe: the gate above guarantees the language is in the map.
+    kokoro_lang, voice_code = KOKORO_LANG_MAP[target_lang]
 
     def _generate():
         samples, sample_rate = kokoro_pipeline.create(text, voice=voice_code, speed=1.0, lang=kokoro_lang)
