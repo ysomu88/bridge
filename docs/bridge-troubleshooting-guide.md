@@ -1,4 +1,4 @@
-# Bridge Project — Dependency Troubleshooting Guide
+# Bridge Project: Dependency Troubleshooting Guide
 
 This documents the issues hit while setting up `bridge` (voice-to-voice
 translation server) on Windows with an RTX 3070 Ti, what caused them, how
@@ -6,14 +6,14 @@ they were fixed, and how to diagnose them again if the environment breaks
 in the future.
 
 **Key context for this project:** it's built around **`uv`**, not plain
-`pip`. The venv (`.venv`) doesn't have `pip` installed inside it at all —
+`pip`. The venv (`.venv`) doesn't have `pip` installed inside it at all;
 that's intentional. Always use `uv pip install ...` for this project, never
 a bare `pip install`. Mixing in a global/system `pip` is what caused most
 of the pain below.
 
 ---
 
-## Issue 1 — `numpy` version check fails with `found=None`
+## Issue 1: `numpy` version check fails with `found=None`
 
 **Symptom:**
 ```
@@ -28,10 +28,10 @@ ValueError: Unable to compare versions for numpy>=1.17: need=1.17 found=None.
    `site-packages`. Installing packages with the wrong `pip` silently
    writes to the wrong location.
 2. The `numpy` package installed *inside* the venv had a corrupted
-   `dist-info` folder — specifically, its `METADATA` file was missing.
+   `dist-info` folder; specifically, its `METADATA` file was missing.
    Python could still `import numpy` fine (the actual `.py`/binary files
-   were there), but `importlib.metadata.version('numpy')` — which
-   `transformers` uses internally to check dependency versions — came back
+   were there), but `importlib.metadata.version('numpy')` (which
+   `transformers` uses internally to check dependency versions) came back
    `None` because it couldn't read a `Version:` field from anywhere.
 
 **How to diagnose this again:**
@@ -49,7 +49,7 @@ where.exe python
 If `numpy.__file__` shows a path inside `.venv\Lib\site-packages\numpy`
 but `importlib.metadata.version('numpy')` errors or returns `None`, the
 dist-info is corrupted. If `where.exe pip` doesn't point inside
-`.venv\Scripts\`, you're using the wrong pip entirely — use `uv pip` instead.
+`.venv\Scripts\`, you're using the wrong pip entirely; use `uv pip` instead.
 
 **Fix:**
 ```powershell
@@ -60,7 +60,7 @@ uv pip install --no-cache "numpy>=1.26.0"
 
 ---
 
-## Issue 2 — `uv` install fails with "Access is denied" mid-rename
+## Issue 2: `uv` install fails with "Access is denied" mid-rename
 
 **Symptom:**
 ```
@@ -87,7 +87,7 @@ Stop-Process -Name python -Force -ErrorAction SilentlyContinue
 
 ---
 
-## Issue 3 — `torch`/`torchvision` version mismatch (CPU vs CUDA, or mismatched versions)
+## Issue 3: `torch`/`torchvision` version mismatch (CPU vs CUDA, or mismatched versions)
 
 **Symptom:** Import errors cascading up through
 `torchvision._meta_registrations` → `transformers` → chatterbox, e.g.:
@@ -100,14 +100,14 @@ or `torch.cuda.is_available()` returning `False` when it shouldn't.
 the **same build/index** (matching CUDA version, or all CPU-only). A plain
 `uv pip install torch torchvision torchaudio` without specifying an index
 pulls default PyPI wheels, which may be CPU-only or a different CUDA
-version than what's already installed for the other two — causing a silent
+version than what's already installed for the other two, causing a silent
 mismatch.
 
 **How to diagnose:**
 ```powershell
 python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__)"
 python -c "import torch; print(torch.cuda.is_available())"
-nvidia-smi   # check the "CUDA Version" shown top-right — this is the max your driver supports
+nvidia-smi   # check the "CUDA Version" shown top-right; this is the max your driver supports
 ```
 If the version strings don't have matching suffixes (e.g. one says `+cpu`
 and another says `+cu121`), or `cuda.is_available()` is `False` on a
@@ -119,12 +119,12 @@ CUDA index (adjust `cu124` to whatever your driver supports per `nvidia-smi`):
 uv pip install --reinstall torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 ```
 Note: `--reinstall` is required if a same-numbered-but-wrong-build version
-is already "installed" — otherwise `uv` sees the version number matches
+is already "installed"; otherwise `uv` sees the version number matches
 and skips reinstalling, even though the actual build (CPU vs CUDA) is wrong.
 
 ---
 
-## Issue 4 — `numba` requires an older `numpy` than what's installed
+## Issue 4: `numba` requires an older `numpy` than what's installed
 
 **Symptom:**
 ```
@@ -142,7 +142,7 @@ numba's constraint. If this resurfaces on its own:
 python -c "import numpy; print(numpy.__version__)"
 uv pip install --reinstall "numpy>=1.26.0,<2.5"
 ```
-Check numba's current numpy ceiling if this keeps happening — it moves as
+Check numba's current numpy ceiling if this keeps happening; it moves as
 numba releases new versions:
 ```powershell
 uv pip show numba
@@ -150,7 +150,7 @@ uv pip show numba
 
 ---
 
-## Issue 5 — Chatterbox voice cloning fails: `'Perth' object has no attribute 'apply_watermark'`
+## Issue 5: Chatterbox voice cloning fails: `'Perth' object has no attribute 'apply_watermark'`
 
 **This is the important one to understand, not just copy-paste past.**
 
@@ -160,7 +160,7 @@ watermarking step:
 'Perth' object has no attribute 'apply_watermark'
 ```
 
-**Root cause — a real problem in this fork's `requirements.txt`, not just
+**Root cause: a real problem in this fork's `requirements.txt`, not just
 environment drift:**
 
 The correct dependency for chatterbox-tts's audio watermarking is a PyPI
@@ -171,14 +171,14 @@ guide use.
 
 This fork's `requirements.txt` instead has you manually install a
 **separate, bare-named package literally called `perth`** (not
-`resemble-perth`) — a name with no verifiable, well-documented identity —
+`resemble-perth`), with no verifiable, well-documented identity,
 and then **patches chatterbox's actual source code** (`mtl_tts.py`,
 `tts.py`, `tts_turbo.py`, `vc.py`) to replace every reference to
 `PerthImplicitWatermarker` with `Perth`, rerouting the watermarking call
 through this unverified package instead.
 
 Since both packages install into a folder with the same name (`perth/`),
-installing both into the same venv can also corrupt each other's files —
+installing both into the same venv can also corrupt each other's files:
 in this case it wiped out `resemble-perth`'s `__init__.py`, turning the
 import into an empty Python namespace package.
 
@@ -190,7 +190,7 @@ uv pip list | Select-String -Pattern "perth"
 # Check if it's a real module or an empty namespace package
 python -c "import perth; print(perth.__file__)"
 # A real package prints a path. `None` means it's an empty namespace
-# package — a strong sign something is missing/corrupted.
+# package, a strong sign something is missing/corrupted.
 
 # Confirm which class actually exists
 python -c "import perth; print(dir(perth))"
@@ -199,7 +199,7 @@ python -c "import perth; print(dir(perth))"
 Select-String -Path ".venv\Lib\site-packages\chatterbox\tts.py" -Pattern "perth"
 ```
 
-**Fix — remove the unverified package and restore the real dependency:**
+**Fix: remove the unverified package and restore the real dependency:**
 ```powershell
 uv pip uninstall perth -y
 Remove-Item ".venv\Lib\site-packages\perth" -Recurse -Force -ErrorAction SilentlyContinue
@@ -248,8 +248,8 @@ uv pip install "chatterbox-tts>=0.1.4" --no-deps
 
 # 3. Its missing deps, also without deps (to avoid pulling a numpy conflict)
 uv pip install "llvmlite>=0.43.0" "numba>=0.60.0" "librosa>=0.10.0" "resemble-perth" --no-deps
-#    ^ NOTE: use "resemble-perth" here, NOT bare "perth" — see Issue 5 above.
-#    The original requirements.txt says "perth" — override that.
+#    ^ NOTE: use "resemble-perth" here, NOT bare "perth"; see Issue 5 above.
+#    The original requirements.txt says "perth"; override that.
 
 # 4. Remaining supporting packages, normal resolution
 uv pip install conformer diffusers einops rotary-embedding-torch encodec vector-quantize-pytorch
@@ -264,7 +264,7 @@ uv pip install --reinstall torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --
 # 7. Pin numpy below numba's ceiling if it drifted upward again
 uv pip install --reinstall "numpy>=1.26.0,<2.5"
 
-# 8. espeak-ng (OS-level, not pip) — needed for non-English TTS phonemization
+# 8. espeak-ng (OS-level, not pip), needed for non-English TTS phonemization
 Start-Process "https://github.com/espeak-ng/espeak-ng/releases/latest"
 #    Download and run the .msi manually.
 
@@ -282,7 +282,7 @@ python server.py
 
 ## General debugging habits that helped
 
-- **Always use `uv pip`, never bare `pip`**, for this project — the venv
+- **Always use `uv pip`, never bare `pip`**, for this project; the venv
   has no `pip` installed at all, so a bare `pip install` always means
   you're accidentally hitting a global Python install instead.
 - When an import error mentions a version but `pip show` and
@@ -291,10 +291,10 @@ python server.py
   real version conflict.
 - `--reinstall` (or `--force-reinstall`) matters when a package is
   "technically" the right version number but the actual build is wrong
-  (e.g. CPU vs CUDA) — a plain install will skip it as "already
+  (e.g. CPU vs CUDA), so a plain install will skip it as "already
   satisfied."
 - "Access is denied" during install on Windows usually means a lingering
-  process (stray `python.exe`, an open IDE) has a file locked — close
+  process (stray `python.exe`, an open IDE) has a file locked; close
   everything touching the venv before retrying.
 - If two packages might install into a folder with the *same name*
   (e.g. `perth`), be suspicious of **exactly this kind of failure mode**:

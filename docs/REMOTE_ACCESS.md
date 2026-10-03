@@ -1,10 +1,10 @@
-# Bridge — Remote Control from Your Phone
+# Bridge: Remote Control from Your Phone
 
 Drive the Bridge stack on this PC from anywhere: **start** it, check on it, read
-its **logs**, **stop** it, and **shut the PC down** — all from your phone.
+its **logs**, **stop** it, and **shut the PC down**, all from your phone.
 
 Powering the PC **on** is deliberately out of scope (a human turns the machine
-on — see [Powering the PC on](#powering-the-pc-on-later) at the end if you ever
+on; see [Powering the PC on](#powering-the-pc-on-later) at the end if you ever
 want to automate that too). Everything *after* power-on is remote.
 
 ---
@@ -29,13 +29,13 @@ Two pieces do all the work:
 
 | Piece | Role |
 |---|---|
-| `bridge-remote.ps1` | The control script — `start`, `stop`, `restart`, `status`, `logs`, `shutdown`, `cancel` |
+| `bridge-remote.ps1` | The control script: `start`, `stop`, `restart`, `status`, `logs`, `shutdown`, `cancel` |
 | `BridgeStack` task | Owns the server's process tree so it **survives your SSH session closing** |
 
 ### Why a scheduled task, and not just SSH + `Start-Process`?
 
 This is the single most important design decision here. Windows OpenSSH `sshd`
-**tears down its entire process tree when the session disconnects** — unlike
+**tears down its entire process tree when the session disconnects**, unlike
 Unix, where a backgrounded process keeps running. So if you start the server
 directly from an SSH command, it dies the instant you close the SSH app.
 
@@ -47,7 +47,7 @@ Scheduler to run the stack, and your SSH session can hang up immediately.
 
 ## One-time setup
 
-### 1. On the PC — run the setup script (elevated)
+### 1. On the PC: run the setup script (elevated)
 
 ```powershell
 cd "$HOME\Documents\PythonScripts\bridge"
@@ -79,23 +79,23 @@ Everything it does is written to `remote_logs\setup.log`.
 > the script tells you it isn't logged in yet. Use the same account you'll use
 > on your phone.
 
-### 2. On the phone — Tailscale
+### 2. On the phone: Tailscale
 
 1. Install **Tailscale** from your app store.
 2. Sign in with the **same account** you used on the PC.
 3. Turn the VPN switch **on**. Your phone can now reach the PC by name from
-   anywhere in the world — there is no port forwarding and nothing is exposed
+   anywhere in the world. There is no port forwarding and nothing is exposed
    to the public internet.
 
-### 3. On the phone — an SSH app (Termius)
+### 3. On the phone: an SSH app (Termius)
 
-Install **Termius** (free) — or Blink, Termux + `ssh`, JuiceSSH, etc.
+Install **Termius** (free), or Blink, Termux + `ssh`, JuiceSSH, etc.
 
 Add a new host:
 
 | Field | Value |
 |---|---|
-| Address / Hostname | your PC's Tailscale name (run `.\bridge-remote.ps1 status` on the PC to print it) — e.g. `desktop.tailxxxx.ts.net` |
+| Address / Hostname | your PC's Tailscale name (run `.\bridge-remote.ps1 status` on the PC to print it), e.g. `desktop.tailxxxx.ts.net` |
 | Username | your Windows username |
 | Key | the private key printed by setup (`~\.ssh\bridge_phone_ed25519`), or the key you generated in the app |
 
@@ -107,14 +107,14 @@ Add a new host:
 > authorise the key for it instead. Scripts launched as that user still work
 > fine as long as it has access to this folder.
 
-### 4. On the phone — save the snippets
+### 4. On the phone: save the snippets
 
 Once the repo folder is on your `PATH` (the setup script does this), there is a
 short `bridge` command, so you never paste a long path:
 
 | You type | It runs |
 |---|---|
-| `bridge` | `status` — the default when you give no action |
+| `bridge` | `status`, the default when you give no action |
 | `bridge start` | Ollama + server + public URL |
 | `bridge start -NoTunnel` | Ollama + server, no public URL |
 | `bridge stop` | Close the public URL, server and Ollama |
@@ -134,7 +134,7 @@ short `bridge` command, so you never paste a long path:
 4. Save, then **pin** the ones you use often so they sit at the top
 
 Tapping a pinned snippet runs it in the current session. If your SSH shell is
-`cmd.exe` rather than PowerShell, `bridge` still works — it is a `.cmd` file, so
+`cmd.exe` rather than PowerShell, `bridge` still works, because it is a `.cmd` file, so
 it does not depend on the shell at all.
 
 **Reconnect after setup.** The `PATH` change only applies to new SSH sessions, so
@@ -155,7 +155,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\<you>\Documents\Py
 | `start` | Starts Ollama if needed, then the Bridge server, and waits until it's actually serving |
 | `stop` | Stops the server **and Ollama** (use `-KeepOllama` to stop only the server) |
 | `restart` | `stop` then `start` |
-| `logs` | Tails the server / worker / Ollama logs — `logs -Tail 80` for more |
+| `logs` | Tails the server / worker / Ollama logs; `logs -Tail 80` for more |
 | `shutdown` | Stops the stack, then powers the PC off after a countdown (`-Minutes 5`) |
 | `cancel` | Aborts a pending shutdown |
 
@@ -171,11 +171,11 @@ A typical session from your phone:
 - **First start is slow.** The models (Whisper, Kokoro, Piper, Chatterbox) take
   roughly **40–90 seconds** to load. `start` waits for you (default 300s) and
   prints live progress from the logs if it times out.
-- **`stop` also stops Ollama**, including the `ollama app.exe` tray helper —
+- **`stop` also stops Ollama**, including the `ollama app.exe` tray helper;
   otherwise the tray silently respawns the server. If you'd rather keep Ollama
   running, use `stop -KeepOllama`.
 - **`shutdown` force-closes running apps** after the countdown (Windows implies
-  `/f` whenever a timeout is set), so save your work — or use `-Minutes 5` to
+  `/f` whenever a timeout is set), so save your work, or use `-Minutes 5` to
   leave a generous window and `cancel` if you change your mind.
 - **Logs live in `remote_logs\`**: `worker.log` (the launcher), `server.log`
   (stdout), `server.err.log` (the server's real log output), `ollama.log`.
@@ -191,7 +191,7 @@ http://<pc-tailscale-name>:8000
 ```
 
 `server.py` already binds to `0.0.0.0`, and its WebSocket origin check compares
-the browser's `Origin` against the `Host` it was opened on — which matches for
+the browser's `Origin` against the `Host` it was opened on, which matches for
 both the Tailscale hostname and the Tailscale IP. So **no server changes and no
 `run_bridge.ps1`/localtunnel are needed** for personal use. You can keep
 localtunnel as a fallback for sharing with people who aren't on your tailnet.
@@ -236,16 +236,16 @@ send the link to can use the server without installing Tailscale:
 - `status` always shows the current public URL (or warns if the tunnel dropped)
 - `stop` closes the public URL **first**, then the server and Ollama
 - `tunnel` opens the public URL on its own, without touching the server
-- `start -NoTunnel` skips it entirely — private to your tailnet
+- `start -NoTunnel` skips it entirely (private to your tailnet)
 - `start -Subdomain myname` asks for a different subdomain
 
 ### Running it from your phone works
 
 `start` is safe over SSH. The tunnel runs in its own on-demand scheduled task
-(`BridgeTunnel`), **not** as a child of your SSH session — because Windows
+(`BridgeTunnel`), **not** as a child of your SSH session, because Windows
 OpenSSH tears down the entire process tree when a session disconnects. A tunnel
 launched directly by an SSH command dies the moment you close Termius, while the
-server (owned by the `BridgeStack` task) keeps serving — leaving a public URL
+server (owned by the `BridgeStack` task) keeps serving, leaving a public URL
 that 502s.
 
 You can confirm who owns it:
@@ -256,12 +256,12 @@ Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" |
     ForEach-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)").Name }
 ```
 
-It should report `powershell.exe` (the task worker) — not `sshd`.
+It should report `powershell.exe` (the task worker), not `sshd`.
 
 ### Subdomain collisions are handled for you
 
 `--subdomain bridge` is only a *preference*. If someone else already holds that
-name, localtunnel silently assigns a random one — so the script reads the URL back
+name, localtunnel silently assigns a random one, so the script reads the URL back
 out of localtunnel's output and always shows what was **actually** assigned:
 
 ```
@@ -276,7 +276,7 @@ You never have to guess which URL is live.
 - **No password.** localtunnel v2 serves the page directly; the old
   IP-password interstitial is gone.
 - **It is genuinely public.** There is no auth in front of it. Treat the URL as
-  public and only share it with people you trust — `start -NoTunnel` is the
+  public and only share it with people you trust, with `start -NoTunnel` as the
   private option.
 - **The tunnel dies with the stack.** If the PC reboots, or someone runs `stop`,
   the URL goes dead. Re-run `start` to bring it back (the subdomain may change).
@@ -287,7 +287,7 @@ You never have to guess which URL is live.
 
 In the Tailscale admin console you can share *just* this machine with an external
 email address. They install Tailscale, sign in with their own account, and get
-access to that one PC only — no public URL, no localtunnel. Reach it at
+access to that one PC only: no public URL, no localtunnel. Reach it at
 `http://<that-pc>:8000`.
 
 ---
@@ -305,7 +305,7 @@ Windows password so the task can start with nobody logged in.
   contains a space.
 - Confirm the private key in the phone app is the one whose public half landed
   in `C:\ProgramData\ssh\administrators_authorized_keys`.
-- Give it 10–30 seconds after setup and retry — `sshd` was restarted.
+- Give it 10–30 seconds after setup and retry; `sshd` was restarted.
 
 **SSH connects but `bridge-remote.ps1` isn't found**
 `$HOME` in the snippet resolves to the SSH user's profile. If you created a
@@ -314,11 +314,11 @@ second Windows account, use the absolute path instead:
 
 **`start` reports the port never opened**
 Read the log tail it prints. The most common causes are a missing `llama3.2`
-model (`ollama pull llama3.2`) and GPU/CUDA DLL problems — both appear verbatim
+model (`ollama pull llama3.2`) and GPU/CUDA DLL problems; both appear verbatim
 in `remote_logs\server.err.log`.
 
 **Phone can't reach `http://<pc>:8000` but SSH works**
-Run `status` on the PC — it prints "Tailscale not detected" when Tailscale isn't
+Run `status` on the PC; it prints "Tailscale not detected" when Tailscale isn't
 installed/logged in. Also check the phone's Tailscale VPN switch is on.
 
 **Port 8000 is occupied again straight after `stop`**
@@ -328,7 +328,7 @@ it.
 
 **Running `setup-remote-access.ps1` opened it in Notepad instead of running it**
 Notepad is the default handler for `.ps1` files on Windows, so launching the file
-*as a file* — a double-click, from `cmd`, or via the Run box — opens the source
+*as a file* (a double-click, from `cmd`, or via the Run box) opens the source
 instead of executing it. It only runs when you type it at a **PowerShell prompt**.
 If in doubt, use the explicit form, which always executes:
 
@@ -337,11 +337,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-remote-access.ps1" 
 ```
 
 **`shutdown` prints shutdown.exe's usage text**
-You're on an older copy of the script — the `/c` comment used to contain double
+You're on an older copy of the script; the `/c` comment used to contain double
 quotes, which mangles the command line. Pull the current `bridge-remote.ps1`.
 
 **A snippet fails with `the -File parameter does not exist`**
-Windows' default SSH shell is **cmd.exe**, and `$HOME` is not a cmd variable — it
+Windows' default SSH shell is **cmd.exe**, and `$HOME` is not a cmd variable; it
 is passed through literally. The prompt tells you which shell you got:
 `PS C:\...>` is PowerShell, whereas `user@HOSTNAME C:\...>` is cmd.exe.
 
@@ -363,15 +363,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\<you>\Documents\Py
 
 **Tailscale says `NoState` / "Tailscale is starting" / the phone times out**
 The Tailscale backend can wedge after an install or an upgrade. A **reboot fixes
-it** — the node key is stored, so it normally re-registers by itself. If
+it**. The node key is stored, so it normally re-registers by itself. If
 `tailscale status` then reports `Logged out`, click the tray icon → *Log in*.
 
 While it is wedged there is no tunnel, so port 22 **times out even though sshd is
-listening** — the virtual adapter exists but nothing is behind it. That is why
+listening**. The virtual adapter exists but nothing is behind it. That is why
 this looks so much like a firewall problem. `restart-tailscale.ps1` tries a
 service restart first (cheap, sometimes enough); a reboot is the reliable fix.
 
-**Still stuck — run the diagnostics**
+**Still stuck? Run the diagnostics**
 
 ```powershell
 .\diagnose-ssh-firewall.ps1
@@ -387,10 +387,10 @@ and re-tests. Add `-ReportOnly` to look without changing anything.
 
 Power-on needs hardware or firmware help, which is why it's out of scope:
 
-- **Wake-on-LAN** — enable it in BIOS and on the NIC, then use a WoL app on the
+- **Wake-on-LAN**: enable it in BIOS and on the NIC, then use a WoL app on the
   phone. Getting the magic packet to your LAN from outside needs a router app
   that supports WoL, or an always-on device on your LAN as a relay.
-- **Smart plug** + BIOS "Restore on AC power loss" — the simplest hardware route:
+- **Smart plug** + BIOS "Restore on AC power loss": the simplest hardware route:
   flip the plug off/on and the PC boots.
 - Many **router vendor apps** (ASUS, TP-Link, Netgear) expose WoL reachable from
   anywhere through the vendor's cloud.
@@ -404,10 +404,10 @@ Once the PC is on, everything in this document works unchanged.
 | File | Purpose |
 |---|---|
 | `bridge-remote.ps1` | The remote control script (all actions) |
-| `bridge.cmd` | Short entry point — with the folder on your `PATH`, just type `bridge start`, `bridge stop`, … from any shell |
+| `bridge.cmd` | Short entry point: with the folder on your `PATH`, just type `bridge start`, `bridge stop`, … from any shell |
 | `setup-remote-access.ps1` | One-time elevated setup (Tailscale, OpenSSH, keys, task) |
-| `restart-tailscale.ps1` | Recovery helper — restarts a Tailscale backend wedged in `NoState` |
-| `diagnose-ssh-firewall.ps1` | Troubleshooting — firewall/adapter report, then the minimum fix and a re-test |
+| `restart-tailscale.ps1` | Recovery helper: restarts a Tailscale backend wedged in `NoState` |
+| `diagnose-ssh-firewall.ps1` | Troubleshooting: firewall/adapter report, then the minimum fix and a re-test |
 | `docs/REMOTE_ACCESS.md` | This document |
 | `remote_logs/` | Runtime logs (gitignored) |
 
