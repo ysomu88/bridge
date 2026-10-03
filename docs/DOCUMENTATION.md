@@ -1,4 +1,4 @@
-# Bridge — Architecture & Technical Reference
+# Bridge: Architecture & Technical Reference
 
 **Stack:** faster-whisper · Ollama (llama3.2) · Kokoro-82M ONNX · Piper TTS · Chatterbox Multilingual · eSpeak NG
 **Target:** RTX 3070 Ti (8 GB VRAM) · Windows 11 · `uv` package manager · `localtunnel` for remote access
@@ -27,19 +27,19 @@ Browser mic (Raw Float32 PCM stream)
         │       └─ Dynamic system prompt: "translate {src_language} to {tgt_language}"
         │
         └─ TTS routing, in priority order:
-                1. Chatterbox Multilingual — if session has a registered voice_id
+                1. Chatterbox Multilingual: if session has a registered voice_id
                        └─ POST /api/voice/upload registered this voice earlier
                        └─ falls back to step 2/3 if cloning fails or language unsupported
-                2. Piper — for Korean and German (Kokoro doesn't cover these)
-                3. Kokoro-82M ONNX + eSpeak NG phonemizer — all other languages
+                2. Piper: for Korean and German (Kokoro doesn't cover these)
+                3. Kokoro-82M ONNX + eSpeak NG phonemizer: all other languages
                 └─ raw int16 PCM chunks → websocket.send_bytes() → Web Audio API → speaker
 ```
 
 ### Why Raw Float32 PCM?
 
-Early versions sent WebM/Opus container chunks via `MediaRecorder`. Individual WebM chunks cannot be decoded in isolation — they depend on codec headers that only exist in the first chunk, so server-side energy measurement always failed.
+Early versions sent WebM/Opus container chunks via `MediaRecorder`. Individual WebM chunks cannot be decoded in isolation; they depend on codec headers that only exist in the first chunk, so server-side energy measurement always failed.
 
-The current pipeline bypasses containers entirely. The browser's `ScriptProcessorNode` extracts raw float32 PCM directly from the microphone hardware track and sends it over the WebSocket. The server reconstructs the audio array with `np.frombuffer(data, dtype=np.float32)` — no decoder, no file parsing, minimal latency.
+The current pipeline bypasses containers entirely. The browser's `ScriptProcessorNode` extracts raw float32 PCM directly from the microphone hardware track and sends it over the WebSocket. The server reconstructs the audio array with `np.frombuffer(data, dtype=np.float32)`, with no decoder, no file parsing, minimal latency.
 
 ---
 
@@ -55,11 +55,11 @@ The current pipeline bypasses containers entirely. The browser's `ScriptProcesso
 | Chinese | `zh` | Kokoro (`cmn`, `zf_xiaobei`) | espeak lang code is `cmn`, not `zh` |
 | Hindi | `hi` | Kokoro (`hi`, `hf_alpha`) | Requires eSpeak NG |
 | Portuguese | `pt` | Kokoro (`pt-br`, `pf_dora`) | Requires eSpeak NG |
-| Korean | `ko` | Piper (`piper-kss-korean`) | Voice model downloaded separately — see Piper section below |
-| German | `de` | Piper (`de_DE-thorsten-high`) | Voice model downloaded separately — see Piper section below |
-| Telugu | `te` | None | STT + translation only — no preset TTS engine supports it |
+| Korean | `ko` | Piper (`piper-kss-korean`) | Voice model downloaded separately; see Piper section below |
+| German | `de` | Piper (`de_DE-thorsten-high`) | Voice model downloaded separately; see Piper section below |
+| Telugu | `te` | None | STT + translation only; no preset TTS engine supports it |
 
-Voice cloning (Chatterbox Multilingual) covers a separate, broader language list — see the Voice Cloning section below. It supports German and Korean natively without Piper, but does not support Telugu either.
+Voice cloning (Chatterbox Multilingual) covers a separate, broader language list; see the Voice Cloning section below. It supports German and Korean natively without Piper, but does not support Telugu either.
 
 ---
 
@@ -76,7 +76,7 @@ Voice cloning (Chatterbox Multilingual) covers a separate, broader language list
 | **Total without voice cloning** | **~3.2 GB** ✅ |
 | **Total with voice cloning enabled** | **~5.2-6.2 GB** ✅ |
 
-Piper runs on CPU (`use_cuda=False`) by design — it's lightweight enough that GPU acceleration isn't worth the added complexity. Chatterbox is the only optional component; if `chatterbox-tts` fails to install or load, the server logs a warning and continues running with preset voices only, using no additional VRAM.
+Piper runs on CPU (`use_cuda=False`) by design; it's lightweight enough that GPU acceleration isn't worth the added complexity. Chatterbox is the only optional component; if `chatterbox-tts` fails to install or load, the server logs a warning and continues running with preset voices only, using no additional VRAM.
 
 ---
 
@@ -109,7 +109,7 @@ The silence threshold can be adjusted live via the slider in the browser UI with
 ws://localhost:8000/ws/stream?source=en&target=es&voice_id=abc123def456
 ```
 
-`source` and `target` are required (default to `en`/`es` if omitted). `voice_id` is optional — pass a registered voice profile id (from `POST /api/voice/upload`) to use a cloned voice for this session's TTS output. Omit it to use the standard preset voice pipeline.
+`source` and `target` are required (default to `en`/`es` if omitted). `voice_id` is optional: pass a registered voice profile id (from `POST /api/voice/upload`) to use a cloned voice for this session's TTS output. Omit it to use the standard preset voice pipeline.
 
 ### Browser → Server
 
@@ -125,7 +125,7 @@ ws://localhost:8000/ws/stream?source=en&target=es&voice_id=abc123def456
 |---|---|---|
 | Text JSON | `{"type":"subtitle","src":"...","tgt":"...","en":"...","es":"..."}` | Transcription + translation |
 | Text JSON | `{"type":"tts_config","sample_rate":22050}` | Sent before non-Kokoro TTS chunks (Piper is 22050 Hz, Chatterbox varies) so the client can recreate its AudioContext at the correct rate |
-| Binary | Raw int16 PCM @ variable sample rate | TTS audio chunk — rate depends on engine (Kokoro 24kHz, Piper 22050Hz, Chatterbox varies) |
+| Binary | Raw int16 PCM @ variable sample rate | TTS audio chunk; the rate depends on engine (Kokoro 24kHz, Piper 22050Hz, Chatterbox varies) |
 
 ### Voice Profile Management (REST)
 
@@ -133,7 +133,7 @@ ws://localhost:8000/ws/stream?source=en&target=es&voice_id=abc123def456
 |---|---|---|
 | `POST` | `/api/voice/upload` | Upload a `multipart/form-data` audio file (`file` field). Converts WebM→WAV server-side, registers a voice profile, returns `{"voice_id": "...", "status": "registered"}` |
 | `DELETE` | `/api/voice/{voice_id}` | Removes a voice profile and deletes its WAV file from disk |
-| `GET` | `/api/voice/status` | Returns `{"available": bool, "active_profiles": int, "supported_languages": [...]}` — used by the client to decide whether to show the voice cloning UI at all |
+| `GET` | `/api/voice/status` | Returns `{"available": bool, "active_profiles": int, "supported_languages": [...]}` (used by the client to decide whether to show the voice cloning UI at all) |
 
 ---
 
@@ -156,7 +156,7 @@ If eSpeak NG is installed to a non-default path, update these two lines accordin
 
 ## Piper TTS (Korean, German)
 
-Kokoro doesn't have voices for Korean or German. Piper fills this gap with two separately-downloaded voice models that load on CPU (`use_cuda=False` — these models are lightweight enough that GPU acceleration isn't worth the complexity):
+Kokoro doesn't have voices for Korean or German. Piper fills this gap with two separately-downloaded voice models that load on CPU (`use_cuda=False`; these models are lightweight enough that GPU acceleration isn't worth the complexity):
 
 ```python
 PIPER_VOICE_FILES = {
@@ -165,9 +165,9 @@ PIPER_VOICE_FILES = {
 }
 ```
 
-If these files aren't present at startup, the server logs a warning and that language falls back to subtitles-only — translation still works, there's just no audio output.
+If these files aren't present at startup, the server logs a warning and that language falls back to subtitles-only; translation still works, there's just no audio output.
 
-A known quirk: Piper's `synthesize()` writes raw audio into a `wave.Wave_write` object that must have its format explicitly configured first (`setnchannels`, `setsampwidth`, `setframerate`) before the call — Piper doesn't set this itself, and omitting it throws `# channels not specified`.
+A known quirk: Piper's `synthesize()` writes raw audio into a `wave.Wave_write` object that must have its format explicitly configured first (`setnchannels`, `setsampwidth`, `setframerate`) before the call; Piper doesn't set this itself, and omitting it throws `# channels not specified`.
 
 Piper outputs at 22050 Hz, different from Kokoro's 24000 Hz. The server sends a `tts_config` message with the actual sample rate before streaming Piper audio, and the client recreates its `AudioContext` at that rate to avoid pitch/speed distortion.
 
@@ -185,7 +185,7 @@ Voice cloning is an optional layer on top of the preset-voice pipeline. It lets 
 chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
 ```
 
-If `chatterbox-tts` isn't installed, or CUDA loading fails (falls back to CPU with a warning), or the import fails entirely, `chatterbox_model` stays `None` and the feature is cleanly disabled — `GET /api/voice/status` reports `available: false`, and the client hides the recording UI.
+If `chatterbox-tts` isn't installed, or CUDA loading fails (falls back to CPU with a warning), or the import fails entirely, `chatterbox_model` stays `None` and the feature is cleanly disabled: `GET /api/voice/status` reports `available: false`, and the client hides the recording UI.
 
 ### Voice profile lifecycle
 
@@ -193,7 +193,7 @@ If `chatterbox-tts` isn't installed, or CUDA loading fails (falls back to CPU wi
 2. `POST /api/voice/upload` receives the blob, saves it temporarily, then converts it to WAV
 3. The WAV conversion tries `torchaudio.load()` first; if that fails (its ffmpeg backend detection is unreliable on Windows even with ffmpeg on PATH), it falls back to `soundfile`, which has broader native codec support via libsndfile
 4. The converted WAV is stored in `voice_samples/{voice_id}.wav` and registered in the in-memory `voice_profiles` dict
-5. The client passes `voice_id` as a WebSocket query param on the next session — `SessionState.voice_id` carries it through to `synthesise_and_stream`
+5. The client passes `voice_id` as a WebSocket query param on the next session: `SessionState.voice_id` carries it through to `synthesise_and_stream`
 
 ### Synthesis routing
 
@@ -217,11 +217,11 @@ wav_tensor = chatterbox_model.generate(
 )
 ```
 
-`cfg_weight=0.3` (rather than the library default of 0.5) is intentional — Resemble AI's own guidance notes that low `cfg_weight` reduces the cloned voice inheriting an accent from the reference clip's language when the target language differs from the reference. Since users will commonly record in one language and translate to several others, this tradeoff favors more language-faithful output over slightly weaker voice similarity.
+`cfg_weight=0.3` (rather than the library default of 0.5) is intentional: Resemble AI's own guidance notes that low `cfg_weight` reduces the cloned voice inheriting an accent from the reference clip's language when the target language differs from the reference. Since users will commonly record in one language and translate to several others, this tradeoff favors more language-faithful output over slightly weaker voice similarity.
 
 ### Fallback behavior
 
-Any failure in the cloning path — missing model, missing reference file, unsupported target language, or a runtime exception during generation — routes to `_synthesise_chatterbox_fallback`, which re-runs the same Piper/Kokoro logic as the normal pipeline. Translation never silently fails because of a voice cloning issue; worst case, the user hears a preset voice instead of their cloned one.
+Any failure in the cloning path (missing model, missing reference file, unsupported target language, or a runtime exception during generation) routes to `_synthesise_chatterbox_fallback`, which re-runs the same Piper/Kokoro logic as the normal pipeline. Translation never silently fails because of a voice cloning issue; worst case, the user hears a preset voice instead of their cloned one.
 
 ### Supported languages
 
@@ -234,17 +234,17 @@ CHATTERBOX_LANGUAGES = {
 }
 ```
 
-Notably this includes German and Korean natively, without needing Piper. Telugu is not supported by Chatterbox either — there's currently no TTS engine in Bridge that covers it.
+Notably this includes German and Korean natively, without needing Piper. Telugu is not supported by Chatterbox either; there's currently no TTS engine in Bridge that covers it.
 
 ### Watermarking
 
-Every Chatterbox output includes Resemble AI's PerTh (Perceptual Threshold) watermark — an inaudible signal embedded in the generated audio that survives compression and basic editing, used to verify the audio was AI-generated if ever needed. This is not configurable and not a privacy concern for Bridge's use case (live, in-the-moment conversational translation, not pre-recorded content distribution).
+Every Chatterbox output includes Resemble AI's PerTh (Perceptual Threshold) watermark: an inaudible signal embedded in the generated audio that survives compression and basic editing, used to verify the audio was AI-generated if ever needed. This is not configurable and not a privacy concern for Bridge's use case (live, in-the-moment conversational translation, not pre-recorded content distribution).
 
 ---
 
 ## Concurrency Model
 
-Bridge uses Python's `asyncio` for concurrency — a single thread, single event loop. CPU-bound work (Whisper inference, audio decode) runs in a thread pool via `run_in_executor`. The Ollama HTTP call is natively async via `httpx.AsyncClient`.
+Bridge uses Python's `asyncio` for concurrency: a single thread, single event loop. CPU-bound work (Whisper inference, audio decode) runs in a thread pool via `run_in_executor`. The Ollama HTTP call is natively async via `httpx.AsyncClient`.
 
 A per-session `processing_lock` prevents race conditions when two silence triggers fire close together:
 
@@ -257,20 +257,20 @@ async def process_utterance():
         state.flush_buffer()
 ```
 
-Each WebSocket connection gets its own `SessionState` — isolated audio buffer, VAD state, language pair, silence threshold, and optional voice_id for cloned-voice playback. Multiple devices can connect simultaneously and each runs an independent pipeline.
+Each WebSocket connection gets its own `SessionState`: isolated audio buffer, VAD state, language pair, silence threshold, and optional voice_id for cloned-voice playback. Multiple devices can connect simultaneously and each runs an independent pipeline.
 
 ---
 
 ## Troubleshooting
 
 ### No voice output for non-English languages
-Install eSpeak NG from https://github.com/espeak-ng/espeak-ng/releases/latest (`.msi` for Windows), then restart the server. The server sets the required env vars automatically — no manual configuration needed.
+Install eSpeak NG from https://github.com/espeak-ng/espeak-ng/releases/latest (`.msi` for Windows), then restart the server. The server sets the required env vars automatically; no manual configuration needed.
 
 ### Chinese TTS not working
 The espeak lang code for Mandarin is `cmn`, not `zh`. This is already handled in `KOKORO_LANG_MAP` but worth knowing if you're debugging phonemizer errors directly.
 
 ### Piper synthesis fails with "# channels not specified"
-Piper's `synthesize()` requires the output WAV file to have its format set first via `setnchannels`/`setsampwidth`/`setframerate` — it doesn't configure this itself. Already handled in `_synthesise_piper()`; if you're extending Piper to a new language, make sure any new synthesis call sets these before calling `voice.synthesize()`.
+Piper's `synthesize()` requires the output WAV file to have its format set first via `setnchannels`/`setsampwidth`/`setframerate`; it doesn't configure this itself. Already handled in `_synthesise_piper()`; if you're extending Piper to a new language, make sure any new synthesis call sets these before calling `voice.synthesize()`.
 
 ### Voice cloning loads on CPU instead of CUDA
 Check that your installed `torch` build matches your CUDA version. `chatterbox-tts` pulls in PyTorch as a dependency, which can sometimes resolve to a CPU-only wheel depending on your pip/uv resolution order. Reinstalling with an explicit CUDA index URL usually fixes this.
@@ -279,7 +279,7 @@ Check that your installed `torch` build matches your CUDA version. `chatterbox-t
 The WebM→WAV conversion failed in both `torchaudio` and the `soundfile` fallback. Usually means the recording was empty, corrupted, or your system is missing ffmpeg. Try recording again; if it persists, check that ffmpeg is on PATH.
 
 ### Cloned voice doesn't sound like the target language's native accent
-Expected behavior per Chatterbox's own documentation — if the reference clip's language differs from the target translation language, the output can inherit the reference's accent. `cfg_weight=0.3` mitigates this but doesn't eliminate it. For best fidelity, record the reference sample in your most commonly used target language.
+Expected behavior per Chatterbox's own documentation. If the reference clip's language differs from the target translation language, the output can inherit the reference's accent. `cfg_weight=0.3` mitigates this but doesn't eliminate it. For best fidelity, record the reference sample in your most commonly used target language.
 
 ### "Ollama not reachable at localhost:11434"
 Run `ollama serve` in a separate terminal before starting the server.
@@ -290,4 +290,4 @@ pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.o
 ```
 
 ### Translation never triggers
-Background noise floor is above the silence threshold. Watch the Mic Level bar while silent — it should sit below the marker. Drag the Silence threshold slider right until it does.
+Background noise floor is above the silence threshold. Watch the Mic Level bar while silent; it should sit below the marker. Drag the Silence threshold slider right until it does.
