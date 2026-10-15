@@ -42,5 +42,13 @@ if /i "%~1"=="shutdown" (
     exit /b %ERRORLEVEL%
 )
 
+REM "tunnel off" maps to tunnel -Off
+if /i "%~1"=="tunnel" (
+    if /i "%~2"=="off" (
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" tunnel -Off
+        exit /b %ERRORLEVEL%
+    )
+)
+
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" %* 
 exit /b %ERRORLEVEL%

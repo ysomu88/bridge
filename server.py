@@ -57,6 +57,7 @@ from fastapi import (
     FastAPI,
     File,
     HTTPException,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -1173,6 +1174,20 @@ async def voice_cloning_status():
     }
 
 
+@app.post("/api/shutdown")
+async def shutdown(request: Request):
+    """Graceful shutdown endpoint called by bridge-remote.ps1 stop."""
+    client_ip = request.client.host if request.client else ""
+    if client_ip not in {"127.0.0.1", "localhost", "::1"}:
+        raise HTTPException(status_code=403, detail="Shutdown is only permitted from localhost.")
+    logger.info("🛑 Graceful shutdown requested via /api/shutdown from localhost.")
+
+    # Schedule exit shortly after sending HTTP 200 response
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.5, lambda: os._exit(0))
+    return {"status": "shutting down"}
+
+
 # ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
@@ -1200,9 +1215,16 @@ def _origin_allowed(websocket: WebSocket) -> bool:
     if origin in allowed_extra:
         return True
 
-    host = websocket.headers.get("host", "")
-    origin_host = origin.split("://", 1)[-1]
-    return origin_host == host
+    host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", "")
+    origin_clean = origin.split("://", 1)[-1].rstrip("/")
+    host_clean = host.rstrip("/")
+
+    if origin_clean.lower() == host_clean.lower():
+        return True
+
+    origin_domain = origin_clean.split(":")[0].lower()
+    host_domain = host_clean.split(":")[0].lower()
+    return origin_domain == host_domain
 
 
 @app.websocket("/ws/stream")
