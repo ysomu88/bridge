@@ -414,6 +414,7 @@ function Show-Status {
     if ($funnelUrl) {
         Write-Host ''
         Write-Ok ("Public URL     : {0}   <- share this with other users" -f $funnelUrl)
+        Write-Ok "Short Link     : https://tinyurl.com/bridge-app"
         Write-Info '                 (Protected HTTPS via Tailscale Funnel)'
     }
 
@@ -458,6 +459,7 @@ function Show-TunnelBanner([string]$Url) {
     Write-Host ''
     Write-Host ('  ' + ('=' * 58)) -ForegroundColor DarkCyan
     Write-Host ("   PUBLIC URL  :  " + $Url) -ForegroundColor Green
+    Write-Host ("   SHORT LINK  :  https://tinyurl.com/bridge-app") -ForegroundColor Cyan
     Write-Host ('  ' + ('=' * 58)) -ForegroundColor DarkCyan
     Write-Host '   Share this link. Protected with automatic HTTPS via Tailscale Funnel.' -ForegroundColor Gray
     Write-Host '   NOTE: It is a PUBLIC URL - anyone with the link can use this server.' -ForegroundColor Yellow
