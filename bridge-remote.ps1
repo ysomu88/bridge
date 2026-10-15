@@ -299,6 +299,14 @@ function Invoke-StackRun {
         return 1
     }
 
+    # If a stale server is already holding port 8000 in this session, sweep it first
+    $existing = Get-PortOwner -Port $BridgePort
+    if ($existing) {
+        "[server] sweeping stale process on port $BridgePort (PID $($existing.Id))..." | Add-Content -LiteralPath $WorkerLog
+        $null = Invoke-Native 'taskkill.exe' @('/PID', [string]$existing.Id, '/T', '/F')
+        Start-Sleep -Seconds 1
+    }
+
     "[server] launching: $VenvPython server.py" | Add-Content -LiteralPath $WorkerLog
     
     # NOTE: never pipe the server's output with `2>&1 | Out-File`. Under
@@ -585,6 +593,16 @@ function Stop-Bridge {
 
     # Take the public URL down first, so nobody can reach a half-dying server.
     $null = Stop-Tunnel
+
+    # 1. Ask the server to shut down cleanly via loopback HTTP
+    if (Test-PortOpen -Port $BridgePort) {
+        Write-Info ("Requesting graceful shutdown from server on port {0}..." -f $BridgePort)
+        try {
+            $null = Invoke-RestMethod -Uri "http://127.0.0.1:$BridgePort/api/shutdown" -Method Post -TimeoutSec 3 -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+            $did = $true
+        } catch { }
+    }
 
     if ((Get-StackTaskState) -eq 'Running') {
         Write-Info ("Stopping scheduled task '{0}'..." -f $TaskName)

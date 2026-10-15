@@ -57,6 +57,7 @@ from fastapi import (
     FastAPI,
     File,
     HTTPException,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -1171,6 +1172,20 @@ async def voice_cloning_status():
         "active_profiles": len(voice_profiles),
         "supported_languages": sorted(CHATTERBOX_LANGUAGES),
     }
+
+
+@app.post("/api/shutdown")
+async def shutdown(request: Request):
+    """Graceful shutdown endpoint called by bridge-remote.ps1 stop."""
+    client_ip = request.client.host if request.client else ""
+    if client_ip not in {"127.0.0.1", "localhost", "::1"}:
+        raise HTTPException(status_code=403, detail="Shutdown is only permitted from localhost.")
+    logger.info("🛑 Graceful shutdown requested via /api/shutdown from localhost.")
+
+    # Schedule exit shortly after sending HTTP 200 response
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.5, lambda: os._exit(0))
+    return {"status": "shutting down"}
 
 
 # ---------------------------------------------------------------------------
