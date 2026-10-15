@@ -365,9 +365,14 @@ function Show-Status {
         $procNote = 'owner unknown'
         $proc = Get-PortOwner -Port $BridgePort
         if ($proc) {
-            $up = (Get-Date) - $proc.StartTime
-            $upTxt = "{0}h {1}m {2}s" -f [int]$up.TotalHours, $up.Minutes, $up.Seconds
-            $procNote = "PID {0} ({1}), up {2}" -f $proc.Id, $proc.ProcessName, $upTxt
+            $upTxt = 'running'
+            try {
+                if ($proc.StartTime) {
+                    $up = (Get-Date) - $proc.StartTime
+                    $upTxt = "up {0}h {1}m {2}s" -f [int]$up.TotalHours, $up.Minutes, $up.Seconds
+                }
+            } catch { }
+            $procNote = "PID {0} ({1}), {2}" -f $proc.Id, $proc.ProcessName, $upTxt
         }
         Write-Ok ("Bridge server  : listening on {0} - {1}" -f $BridgePort, $procNote)
 
