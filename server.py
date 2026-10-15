@@ -813,6 +813,75 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
 
 
 # ---------------------------------------------------------------------------
+# Chatterbox warm-up (fire-and-forget after voice upload)
+# ---------------------------------------------------------------------------
+async def _warmup_chatterbox(voice_id: str, ref_path: str) -> None:
+    """
+    Fire-and-forget warm-up: runs one silent inference through Chatterbox right
+    after a voice profile is registered so CUDA kernels, the T3 language model,
+    and the S3Gen vocoder are all hot before the user's first real utterance.
+    The generated audio tensor is discarded — only the side-effects matter:
+    the voice conditionals cache is populated and the GPU is warm.
+    """
+    if chatterbox_model is None:
+        return
+
+    WARMUP_TEXT = "Hello how are you?"
+    WARMUP_LANG = "en"
+
+    logger.info(f"[{voice_id}] 🔥 Starting background warm-up inference…")
+    t0 = time.monotonic()
+    loop = asyncio.get_running_loop()
+
+    def _generate() -> None:
+        # Populate the conditionals cache (mirrors the logic in _synthesise_chatterbox).
+        # On the very first call for this voice_id the cache is empty, so we compute
+        # and store it here — subsequent real synthesis calls will get a cache HIT.
+        cached = voice_conditionals.get(voice_id)
+        if cached is None:
+            chatterbox_model.prepare_conditionals(ref_path, exaggeration=0.5)
+            try:
+                _buf = io.BytesIO()
+                chatterbox_model.conds.save(_buf)
+                voice_conditionals[voice_id] = _buf.getvalue()
+            except Exception as exc:
+                logger.warning(f"[{voice_id}] Warm-up: could not cache conditionals: {exc}")
+        else:
+            try:
+                from chatterbox.mtl_tts import Conditionals  # type: ignore
+                chatterbox_model.conds = Conditionals.load(
+                    io.BytesIO(cached),
+                    map_location=chatterbox_model.device,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[{voice_id}] Warm-up: could not restore cached conditionals ({exc}) — re-deriving."
+                )
+                chatterbox_model.prepare_conditionals(ref_path, exaggeration=0.5)
+
+        # Run the actual inference — result is intentionally discarded.
+        # This exercises the T3 sampler, S3Gen vocoder, and watermarker so their
+        # CUDA kernels and PyTorch allocator workspace are resident before the
+        # first real utterance arrives.
+        chatterbox_model.generate(
+            WARMUP_TEXT,
+            language_id=WARMUP_LANG,
+            audio_prompt_path=None,  # conds already set above
+            cfg_weight=0.3,
+            exaggeration=0.5,
+        )
+
+    try:
+        async with cuda_lock:
+            await loop.run_in_executor(None, _generate)
+        logger.info(
+            f"[{voice_id}] ✅ Warm-up complete in {time.monotonic() - t0:.1f}s — Chatterbox is hot."
+        )
+    except Exception as exc:
+        logger.warning(f"[{voice_id}] Warm-up inference failed (non-fatal): {exc}")
+
+
+# ---------------------------------------------------------------------------
 # TTS via Kokoro-82M
 # ---------------------------------------------------------------------------
 async def synthesise_and_stream(
@@ -1071,6 +1140,12 @@ async def upload_voice_sample(file: UploadFile = File(...)):
 
     voice_profiles[voice_id] = wav_path
     logger.info(f"🎙️  Registered new voice profile '{voice_id}' ({len(contents)} bytes) at {wav_path}")
+
+    # Kick off a silent warm-up inference in the background so Chatterbox's CUDA
+    # kernels and the conditionals cache are hot before the first real utterance.
+    # The task runs under cuda_lock (serialized with Whisper/TTS) and discards
+    # its output — the HTTP response is returned immediately, before it finishes.
+    asyncio.create_task(_warmup_chatterbox(voice_id, wav_path))
 
     return {"voice_id": voice_id, "status": "registered"}
 
