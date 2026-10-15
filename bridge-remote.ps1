@@ -37,20 +37,18 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'tunnel', 'shutdown', 'cancel', 'help', 'ensure-task', 'ensure-tunnel-task', '_run', '_tunnel_run')]
+    [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'tunnel', 'shutdown', 'cancel', 'help', 'ensure-task', '_run')]
     [string]$Action = 'status',
 
     # start/tunnel: run in this console instead of in the background.
     # Useful for local debugging - NOT usable over SSH (dies with the session).
     [switch]$Foreground,
 
-    # start: do NOT open a public localtunnel URL (personal use over Tailscale only).
+    # start: do NOT open a public Tailscale Funnel URL (personal use over Tailscale only).
     [switch]$NoTunnel,
 
-    # start/tunnel: preferred public subdomain. If localtunnel finds it taken it
-    # assigns a random one instead - the URL that was actually assigned is always
-    # printed, so a collision is never a guessing game.
-    [string]$Subdomain = 'bridge',
+    # tunnel: turn off the public Funnel URL.
+    [switch]$Off,
 
     # stop: leave Ollama running (only stop the Bridge FastAPI server).
     [switch]$KeepOllama,
@@ -76,16 +74,11 @@ $LogDir     = Join-Path $RepoRoot 'remote_logs'
 $ServerLog  = Join-Path $LogDir 'server.log'
 $ServerErr  = Join-Path $LogDir 'server.err.log'
 $WorkerLog  = Join-Path $LogDir 'worker.log'
-$TunnelLog  = Join-Path $LogDir 'tunnel.log'
-$TunnelErr  = Join-Path $LogDir 'tunnel.err.log'
-$TunnelState = Join-Path $LogDir 'tunnel.json'
-$TunnelReq  = Join-Path $LogDir 'tunnel-req.txt'
 $OllamaLog  = Join-Path $LogDir 'ollama.log'
 $OllamaErr  = Join-Path $LogDir 'ollama.err.log'
 $SelfPath   = $PSCommandPath
 
 $TaskName   = 'BridgeStack'
-$TunnelTask = 'BridgeTunnel'
 $BridgePort = 8000
 $OllamaPort = 11434
 
@@ -403,15 +396,12 @@ function Show-Status {
         Write-Info 'Server is down. Start it with: .\bridge-remote.ps1 start'
     }
 
-    # Public tunnel
-    $tun = Get-TunnelState
-    if ($tun) {
+    # Public Funnel
+    $funnelUrl = Get-FunnelUrl
+    if ($funnelUrl) {
         Write-Host ''
-        if (Test-TunnelRunning) {
-            Write-Ok ("Public URL     : {0}   <- share this with other users" -f $tun.Url)
-        } else {
-            Write-Warn ("Public tunnel has stopped (was {0}). Re-open with: .\bridge-remote.ps1 tunnel" -f $tun.Url)
-        }
+        Write-Ok ("Public URL     : {0}   <- share this with other users" -f $funnelUrl)
+        Write-Info '                 (Protected HTTPS via Tailscale Funnel)'
     }
 
     Write-Host ''
@@ -420,266 +410,85 @@ function Show-Status {
 }
 
 # ---------------------------------------------------------------------------
-# Public tunnel (localtunnel)
+# Public tunnel (Tailscale Funnel)
 #
-# Publishes http://localhost:8000 at https://<subdomain>.loca.lt so other people
-# can use the server without joining your tailnet. Verified against localtunnel
-# v2: it serves the page directly with no IP-password interstitial, and prints
-# "your url is: https://<name>.loca.lt" on stdout once assigned.
-#
-# The requested subdomain is only a preference. If it is taken, localtunnel
-# silently assigns a random name - so we read the URL back out of its output and
-# always show what was ACTUALLY assigned, flagging the collision.
+# Publishes http://localhost:8000 via Tailscale Funnel at https://<machine>.<tailnet>.ts.net
+# with automatic TLS/HTTPS. Managed natively by Tailscale's background service.
 # ---------------------------------------------------------------------------
-$script:TunnelUrlPattern = 'https://[A-Za-z0-9][A-Za-z0-9.-]*\.loca\.lt'
-
-function Get-TunnelState {
-    if (-not (Test-Path -LiteralPath $TunnelState)) { return $null }
-    try {
-        return (Get-Content -LiteralPath $TunnelState -Raw | ConvertFrom-Json)
-    } catch {
-        return $null
+function Get-TailscaleExe {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Tailscale\tailscale.exe')
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c) { return $c }
     }
-}
-
-function Test-TunnelRunning {
-    $s = Get-TunnelState
-    if (-not $s) { return $false }
-    if ($s.Pid -and (Get-Process -Id ([int]$s.Pid) -ErrorAction SilentlyContinue)) { return $true }
-    return $false
-}
-
-# Poll localtunnel's output until it reports a URL, then return that URL.
-function Wait-TunnelUrl {
-    param([int]$TimeoutSec = 60)
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-Path -LiteralPath $TunnelLog) {
-            $hit = Select-String -Path $TunnelLog -Pattern $script:TunnelUrlPattern -AllMatches |
-                Select-Object -Last 1
-            if ($hit) {
-                return ([regex]::Match($hit.Line, $script:TunnelUrlPattern)).Value
-            }
-        }
-        Start-Sleep -Milliseconds 800
-    }
+    $cmd = Get-Command tailscale -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
     return $null
 }
 
-function Write-TunnelState {
-    param([string]$Url, [int]$ProcessId, [string]$Requested)
-    [pscustomobject]@{
-        Url       = $Url
-        Pid       = $ProcessId
-        Requested = $Requested
-        Started   = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-    } | ConvertTo-Json | Set-Content -LiteralPath $TunnelState -Encoding utf8
+function Get-FunnelUrl {
+    $exe = Get-TailscaleExe
+    if (-not $exe) { return $null }
+    try {
+        $st = & $exe funnel status 2>&1 | Out-String
+        if ($st -match 'Funnel on') {
+            $hit = [regex]::Match($st, 'https://[a-zA-Z0-9.-]+\.ts\.net')
+            if ($hit.Success) { return $hit.Value }
+        }
+    } catch { }
+    return $null
 }
 
-# The tunnel must NOT be a child of the calling shell. If `start` is run from an
-# SSH session, sshd kills that session's entire process tree on disconnect, so the
-# public URL would die the moment the phone's SSH app closed - while the server
-# (owned by the BridgeStack task) carried on serving. The tunnel therefore gets
-# its own on-demand task, for exactly the same reason the server does.
-function Ensure-TunnelTask {
-    if (Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue) { return 'Ready' }
-
-    # Always register this one as Interactive. A "Password" logon type cannot be
-    # registered without the actual password, and this script never has it.
-    # setup-remote-access.ps1 -RunWithoutLogon is what registers BOTH the stack
-    # and the tunnel task with stored credentials, so in that setup this task
-    # already exists and we return early on the line above.
-    $logonType = 'Interactive'
-
-    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" _tunnel_run' -f $SelfPath
-    $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument $arguments -WorkingDirectory $RepoRoot
-    $principal  = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
-        -LogonType $logonType
-    $settings   = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
-        -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
-        -MultipleInstances IgnoreNew
-
-    Register-ScheduledTask -TaskName $TunnelTask -Action $taskAction -Principal $principal `
-        -Settings $settings -Force `
-        -Description 'Public localtunnel URL for Bridge, detached from any SSH session.' | Out-Null
-    return 'Ready'
-}
-
-# _tunnel_run - worker executed BY the BridgeTunnel task (internal).
-function Invoke-TunnelRun {
-    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
-    $wanted = 'bridge'
-    if (Test-Path -LiteralPath $TunnelReq) {
-        $txt = (Get-Content -LiteralPath $TunnelReq -Raw).Trim()
-        if ($txt) { $wanted = $txt }
-    }
-
-    $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
-    if (-not $npx) { $npx = Get-Command npx -ErrorAction SilentlyContinue }
-    if (-not $npx) {
-        'npx not found - install Node.js' | Set-Content -LiteralPath $TunnelErr
-        return 1
-    }
-
-    Remove-Item -LiteralPath $TunnelLog -Force -ErrorAction SilentlyContinue
-    $proc = Start-Process -FilePath $npx.Source `
-        -ArgumentList 'localtunnel', '--port', $BridgePort, '--subdomain', $wanted `
-        -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
-
-    $url = Wait-TunnelUrl -TimeoutSec 60
-    if (-not $url) {
-        ('localtunnel reported no URL within 60s (requested: ' + $wanted + ')') |
-            Add-Content -LiteralPath $TunnelErr
-        return 1
-    }
-
-    Write-TunnelState -Url $url -ProcessId $proc.Id -Requested $wanted
-
-    # Stay alive so the task owns the tunnel for as long as it is running.
-    $proc.WaitForExit()
-    Remove-Item -LiteralPath $TunnelState -Force -ErrorAction SilentlyContinue
-    return 0
-}
-
-function Show-TunnelBanner {
-    param([string]$Url, [string]$Requested)
-    $assigned = ([uri]$Url).Host -replace '\.loca\.lt$', ''
+function Show-TunnelBanner([string]$Url) {
     Write-Host ''
     Write-Host ('  ' + ('=' * 58)) -ForegroundColor DarkCyan
     Write-Host ("   PUBLIC URL  :  " + $Url) -ForegroundColor Green
-    if ($Requested -and ($assigned -ne $Requested)) {
-        Write-Host ("   NOTE: '" + $Requested + "' was already taken, so localtunnel assigned '" +
-                    $assigned + "' instead.") -ForegroundColor Yellow
-    }
     Write-Host ('  ' + ('=' * 58)) -ForegroundColor DarkCyan
-    Write-Host '   Share that link. No password is needed (localtunnel v2 serves the page directly).' -ForegroundColor Gray
-    Write-Host '   NOTE: it is a PUBLIC url - anyone with the link can use this server.' -ForegroundColor Yellow
+    Write-Host '   Share this link. Protected with automatic HTTPS via Tailscale Funnel.' -ForegroundColor Gray
+    Write-Host '   NOTE: It is a PUBLIC URL - anyone with the link can use this server.' -ForegroundColor Yellow
     Write-Host ''
 }
 
 function Start-Tunnel {
-    if (Test-TunnelRunning) {
-        $s = Get-TunnelState
-        Write-Host ''
-        Write-Info 'A public tunnel is already running.'
-        Show-TunnelBanner -Url $s.Url -Requested $s.Requested
+    $exe = Get-TailscaleExe
+    if (-not $exe) {
+        Write-Fail 'Tailscale is not installed. Install Tailscale to use Funnel.'
+        return 1
+    }
+
+    $current = Get-FunnelUrl
+    if ($current) {
+        Write-Info 'Tailscale Funnel is already active.'
+        Show-TunnelBanner -Url $current
         return 0
     }
 
-    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-    Remove-Item -LiteralPath $TunnelLog -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $TunnelErr -Force -ErrorAction SilentlyContinue
-
-    $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
-    if (-not $npx) { $npx = Get-Command npx -ErrorAction SilentlyContinue }
-    if (-not $npx) {
-        Write-Fail 'npx not found - install Node.js to use the public tunnel.'
-        return 1
-    }
-
-    $tunnelArgs = @('localtunnel', '--port', $BridgePort, '--subdomain', $Subdomain)
-
-    if ($Foreground) {
-        # Local console use: streaming here is fine, because this shell is the
-        # session that stays open. Over SSH, use the task path below instead.
-        Write-Info 'Starting public tunnel (output is followed in this console)...'
-        $proc = Start-Process -FilePath $npx.Source -ArgumentList $tunnelArgs `
-            -NoNewWindow -PassThru -RedirectStandardOutput $TunnelLog -RedirectStandardError $TunnelErr
-        $url = Wait-TunnelUrl -TimeoutSec 60
-        if (-not $url) {
-            Write-Fail 'localtunnel did not report a URL within 60 seconds.'
-            Show-LogTail -Path $TunnelErr -Lines 15
-            Show-LogTail -Path $TunnelLog -Lines 15
-            return 1
-        }
-        Write-TunnelState -Url $url -ProcessId $proc.Id -Requested $Subdomain
-        Show-TunnelBanner -Url $url -Requested $Subdomain
-        Write-Info 'Following tunnel output. Ctrl+C stops following (the tunnel keeps running).'
-        Get-Content -LiteralPath $TunnelLog -Wait -ErrorAction SilentlyContinue
-        return 0
-    }
-
-    # Detached path: the task owns the tunnel, so it survives this shell and any
-    # SSH session being closed. The worker writes the state file, so clear the
-    # old one first and then wait for the new URL to appear.
+    Write-Info 'Enabling Tailscale Funnel on port 8000...'
     try {
-        $null = Ensure-TunnelTask
-    } catch {
-        Write-Fail ("Could not register the '{0}' task: {1}" -f $TunnelTask, $_.Exception.Message)
-        return 1
-    }
-
-    Remove-Item -LiteralPath $TunnelState -Force -ErrorAction SilentlyContinue
-    Set-Content -LiteralPath $TunnelReq -Value $Subdomain -Encoding ascii
-
-    Write-Info ("Starting task '{0}' (detached from this session)..." -f $TunnelTask)
-    try {
-        Start-ScheduledTask -TaskName $TunnelTask
-    } catch {
-        Write-Fail ("Could not start the tunnel task: {0}" -f $_.Exception.Message)
-        return 1
-    }
-
-    Write-Info 'Waiting for the tunnel to report its URL...'
-    $deadline = (Get-Date).AddSeconds(75)
-    $url = $null
-    $assigned = $null
-    while ((Get-Date) -lt $deadline) {
-        $st = Get-TunnelState
-        if ($st -and $st.Url) { $url = $st.Url; $assigned = $st.Requested; break }
-        if ((Get-StackTaskState -Name $TunnelTask) -eq 'Ready' -and (Test-Path -LiteralPath $TunnelLog)) {
-            break   # task already exited and never wrote state
+        $null = & $exe funnel --bg --yes $BridgePort 2>&1
+        $url = Get-FunnelUrl
+        if ($url) {
+            Show-TunnelBanner -Url $url
+            return 0
         }
-        Start-Sleep -Milliseconds 800
-    }
+    } catch { }
 
-    if (-not $url) {
-        Write-Fail 'The tunnel did not report a URL in time.'
-        Show-LogTail -Path $TunnelErr -Lines 15
-        Show-LogTail -Path $TunnelLog -Lines 15
-        return 1
-    }
-
-    Show-TunnelBanner -Url $url -Requested $assigned
-    return 0
+    Write-Warn 'Could not confirm Funnel URL. Run `tailscale funnel status` to check.'
+    return 1
 }
 
 function Stop-Tunnel {
-    $did = $false
-
-    # Ending the task tears down the localtunnel process tree it owns.
-    if ((Get-StackTaskState -Name $TunnelTask) -eq 'Running') {
-        Write-Info ("Stopping task '{0}'..." -f $TunnelTask)
-        try { Stop-ScheduledTask -TaskName $TunnelTask } catch { Write-Warn $_.Exception.Message }
-        Start-Sleep -Seconds 2
-        $did = $true
+    $exe = Get-TailscaleExe
+    if (-not $exe) { return 0 }
+    Write-Info 'Disabling public Tailscale Funnel...'
+    try {
+        & $exe funnel --https=443 off 2>&1 | Out-Null
+        Write-Ok 'Public Tailscale Funnel disabled.'
+    } catch {
+        Write-Warn 'Could not disable Funnel.'
     }
-
-    $s = Get-TunnelState
-    if ($s -and $s.Pid) {
-        $p = Get-Process -Id ([int]$s.Pid) -ErrorAction SilentlyContinue
-        if ($p) {
-            Write-Info ("Closing public tunnel (PID {0})..." -f $p.Id)
-            $null = Invoke-Native 'taskkill.exe' @('/PID', [string]$p.Id, '/T', '/F')
-            $did = $true
-        }
-    }
-
-    # npx spawns a child node process, and a tunnel started from a foreground
-    # console may not have a recorded PID - so also sweep by command line.
-    $stray = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match 'localtunnel' })
-    foreach ($n in $stray) {
-        Write-Info ("Closing stray localtunnel process (PID {0})..." -f $n.ProcessId)
-        $null = Invoke-Native 'taskkill.exe' @('/PID', [string]$n.ProcessId, '/T', '/F')
-        $did = $true
-    }
-
-    Remove-Item -LiteralPath $TunnelState -Force -ErrorAction SilentlyContinue
-    if ($did) { Write-Ok 'Public tunnel closed.' } else { Write-Info 'No public tunnel was running.' }
     return 0
 }
 
@@ -883,12 +692,12 @@ function Invoke-CancelShutdown {
 function Show-Usage {
     Write-Head 'bridge-remote.ps1 - usage'
     @'
-  .\bridge-remote.ps1 status                    Health + the URL for your phone
-  .\bridge-remote.ps1 start                     Start Ollama + server + public URL
-  .\bridge-remote.ps1 start -NoTunnel           Same, but no public URL (Tailscale only)
-  .\bridge-remote.ps1 start -Subdomain myname   Ask for a specific public subdomain
+  .\bridge-remote.ps1 status                    Health + URL summary
+  .\bridge-remote.ps1 start                     Start Ollama + server + public Funnel
+  .\bridge-remote.ps1 start -NoTunnel           Same, but no public Funnel (Tailscale private only)
   .\bridge-remote.ps1 start -ReadyTimeout 600   Slow first model load
-  .\bridge-remote.ps1 tunnel                    Open the public URL on its own
+  .\bridge-remote.ps1 tunnel                    Ensure the public Funnel URL is active
+  .\bridge-remote.ps1 tunnel -Off               Turn the public Funnel URL off
   .\bridge-remote.ps1 stop                      Close the public URL, server + Ollama
   .\bridge-remote.ps1 stop -KeepOllama          Close the URL + server, keep Ollama
   .\bridge-remote.ps1 restart                   Stop, then start
@@ -912,7 +721,7 @@ switch ($Action) {
     'restart'  { $null = Stop-Bridge; Start-Sleep -Seconds 2; exit (Start-Bridge) }
     'status'   { Show-Status; exit 0 }
     'logs'     { Show-Logs; exit 0 }
-    'tunnel'   { exit (Start-Tunnel) }
+    'tunnel'   { if ($Off) { exit (Stop-Tunnel) } else { exit (Start-Tunnel) } }
     'shutdown' { exit (Invoke-ShutdownAction) }
     'cancel'   { exit (Invoke-CancelShutdown) }
     'help'     { exit (Show-Usage) }
@@ -921,13 +730,7 @@ switch ($Action) {
         Write-Ok ("Scheduled task '{0}' is {1}." -f $TaskName, $state)
         exit 0
     }
-    'ensure-tunnel-task' {
-        $state = Ensure-TunnelTask
-        Write-Ok ("Scheduled task '{0}' is {1}." -f $TunnelTask, $state)
-        exit 0
-    }
     '_run'     { exit (Invoke-StackRun) }
-    '_tunnel_run' { exit (Invoke-TunnelRun) }
     default    { exit (Show-Usage) }
 }
 

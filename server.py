@@ -1200,9 +1200,16 @@ def _origin_allowed(websocket: WebSocket) -> bool:
     if origin in allowed_extra:
         return True
 
-    host = websocket.headers.get("host", "")
-    origin_host = origin.split("://", 1)[-1]
-    return origin_host == host
+    host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", "")
+    origin_clean = origin.split("://", 1)[-1].rstrip("/")
+    host_clean = host.rstrip("/")
+
+    if origin_clean.lower() == host_clean.lower():
+        return True
+
+    origin_domain = origin_clean.split(":")[0].lower()
+    host_domain = host_clean.split(":")[0].lower()
+    return origin_domain == host_domain
 
 
 @app.websocket("/ws/stream")

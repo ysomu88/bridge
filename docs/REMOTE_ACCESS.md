@@ -218,8 +218,8 @@ the key line from `C:\ProgramData\ssh\administrators_authorized_keys`.
 
 ## Sharing with other people (public URL)
 
-`start` also opens a **public** [localtunnel](https://loca.lt) URL, so anyone you
-send the link to can use the server without installing Tailscale:
+`start` also ensures your **public** Tailscale Funnel URL is active, so anyone you
+send the link to can use the server from any browser without installing Tailscale:
 
 ```powershell
 .\bridge-remote.ps1 start
@@ -227,61 +227,33 @@ send the link to can use the server without installing Tailscale:
 
 ```
 ==============================================================
- PUBLIC URL  :  https://bridge.loca.lt
+ PUBLIC URL  :  https://bridge.wagtail-barb.ts.net
 ==============================================================
- Share that link. No password is needed (localtunnel v2 serves the page directly).
+ Share that link. Secured with automatic HTTPS via Tailscale Funnel.
  NOTE: it is a PUBLIC url - anyone with the link can use this server.
 ```
 
-- `status` always shows the current public URL (or warns if the tunnel dropped)
-- `stop` closes the public URL **first**, then the server and Ollama
-- `tunnel` opens the public URL on its own, without touching the server
-- `start -NoTunnel` skips it entirely (private to your tailnet)
-- `start -Subdomain myname` asks for a different subdomain
+- `status` always shows the current public URL
+- `stop` stops the server and Ollama
+- `tunnel` activates the public Funnel URL on its own
+- `tunnel -Off` turns the public Funnel URL off
+- `start -NoTunnel` skips opening the public URL (private to your tailnet only)
 
 ### Running it from your phone works
 
-`start` is safe over SSH. The tunnel runs in its own on-demand scheduled task
-(`BridgeTunnel`), **not** as a child of your SSH session, because Windows
-OpenSSH tears down the entire process tree when a session disconnects. A tunnel
-launched directly by an SSH command dies the moment you close Termius, while the
-server (owned by the `BridgeStack` task) keeps serving, leaving a public URL
-that 502s.
-
-You can confirm who owns it:
-
-```powershell
-Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" |
-    Where-Object { $_.CommandLine -match 'localtunnel' } |
-    ForEach-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)").Name }
-```
-
-It should report `powershell.exe` (the task worker), not `sshd`.
-
-### Subdomain collisions are handled for you
-
-`--subdomain bridge` is only a *preference*. If someone else already holds that
-name, localtunnel silently assigns a random one, so the script reads the URL back
-out of localtunnel's output and always shows what was **actually** assigned:
-
-```
-PUBLIC URL  :  https://serious-snake-26.loca.lt
-NOTE: 'bridge' was already taken, so localtunnel assigned 'serious-snake-26' instead.
-```
-
-You never have to guess which URL is live.
+Funnel runs natively as part of the Tailscale background service, so it is completely
+independent of SSH sessions and survives disconnects. No scheduled tasks or Node.js
+wrappers are needed.
 
 ### Good to know
 
-- **No password.** localtunnel v2 serves the page directly; the old
-  IP-password interstitial is gone.
-- **It is genuinely public.** There is no auth in front of it. Treat the URL as
-  public and only share it with people you trust, with `start -NoTunnel` as the
-  private option.
-- **The tunnel dies with the stack.** If the PC reboots, or someone runs `stop`,
-  the URL goes dead. Re-run `start` to bring it back (the subdomain may change).
-- **Capacity is shared.** The GPU is serialised behind a single lock, so keep it
-  to one or two people at a time or latency will show.
+- **Permanent, clean URL.** Unlike localtunnel, the URL is stable and never changes
+  across restarts: `https://bridge.wagtail-barb.ts.net`.
+- **Automatic HTTPS.** Tailscale automatically provisions and renews valid TLS certificates.
+- **It is genuinely public.** Anyone with the link can use this server, so only share it with
+  people you trust, or use `start -NoTunnel` to keep it private to your tailnet.
+- **Capacity is shared.** The GPU is serialised behind a single lock, so keep it to one
+  or two people at a time or latency will show.
 
 ### For a trusted person, prefer Tailscale sharing
 
