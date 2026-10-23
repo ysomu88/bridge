@@ -572,7 +572,12 @@ async def _synthesise_piper(
             voice.synthesize(text, wav)
         buf.seek(0)
         with _wave.open(buf, "rb") as wav:
-            return wav.readframes(wav.getnframes()), wav.getframerate()
+            raw_pcm = wav.readframes(wav.getnframes())
+            pcm_arr = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32)
+            peak = np.max(np.abs(pcm_arr))
+            if peak > 1e-4:
+                pcm_arr = (pcm_arr / peak) * (32767 * 0.89)
+            return pcm_arr.astype(np.int16).tobytes(), wav.getframerate()
 
     try:
         pcm_bytes, sample_rate = await loop.run_in_executor(None, _generate)
@@ -707,6 +712,11 @@ async def _synthesise_chatterbox(
         logger.warning(f"[{voice_id}] Client disconnected before audio could be sent: {exc}")
         return
 
+    # Peak-normalize to -1.0 dBFS (0.89) to prevent inter-sample clipping and maximize clarity
+    peak = np.max(np.abs(audio_array))
+    if peak > 1e-4:
+        audio_array = (audio_array / peak) * 0.89
+
     pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
     pcm_bytes = pcm_int16.tobytes()
 
@@ -800,6 +810,9 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
         for audio_array in chunks:
             if audio_array is None or len(audio_array) == 0:
                 continue
+            peak = np.max(np.abs(audio_array))
+            if peak > 1e-4:
+                audio_array = (audio_array / peak) * 0.89
             pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
             try:
                 await websocket.send_bytes(pcm_int16.tobytes())
@@ -982,6 +995,9 @@ async def synthesise_and_stream(
         for audio_array in chunks:
             if audio_array is None or len(audio_array) == 0:
                 continue
+            peak = np.max(np.abs(audio_array))
+            if peak > 1e-4:
+                audio_array = (audio_array / peak) * 0.89
             pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
             try:
                 await websocket.send_bytes(pcm_int16.tobytes())
@@ -1100,6 +1116,11 @@ async def upload_voice_sample(file: UploadFile = File(...)):
                 raise ValueError("No audio frames decoded")
 
             audio = _np.concatenate(frames)
+            # Remove DC offset & peak-normalize to -1.0 dBFS (0.89) for clean, strong speaker embedding
+            audio = audio - _np.mean(audio)
+            peak = _np.max(_np.abs(audio))
+            if peak > 1e-4:
+                audio = audio * (0.89 / peak)
             pcm = (_np.clip(audio, -1.0, 1.0) * 32767).astype(_np.int16)
 
             with _wave.open(wav_path, "wb") as wf:
@@ -1114,6 +1135,13 @@ async def upload_voice_sample(file: UploadFile = File(...)):
         try:
             import torchaudio as ta
             waveform, sr = ta.load(raw_path)
+            sig = waveform.mean(dim=0).cpu().numpy()
+            sig = sig - _np.mean(sig)
+            peak = _np.max(_np.abs(sig))
+            if peak > 1e-4:
+                sig = sig * (0.89 / peak)
+            import torch as _torch
+            waveform = _torch.from_numpy(sig).unsqueeze(0)
             ta.save(wav_path, waveform, sr)
             return
         except Exception as exc:
@@ -1121,6 +1149,12 @@ async def upload_voice_sample(file: UploadFile = File(...)):
 
         import soundfile as sf
         data, sr = sf.read(raw_path)
+        if hasattr(data, "ndim") and data.ndim > 1:
+            data = data.mean(axis=1)
+        data = data - _np.mean(data)
+        peak = _np.max(_np.abs(data))
+        if peak > 1e-4:
+            data = data * (0.89 / peak)
         sf.write(wav_path, data, sr)
 
     try:
