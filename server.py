@@ -572,12 +572,7 @@ async def _synthesise_piper(
             voice.synthesize(text, wav)
         buf.seek(0)
         with _wave.open(buf, "rb") as wav:
-            raw_pcm = wav.readframes(wav.getnframes())
-            pcm_arr = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32)
-            peak = np.max(np.abs(pcm_arr))
-            if peak > 1e-4:
-                pcm_arr = (pcm_arr / peak) * (32767 * 0.89)
-            return pcm_arr.astype(np.int16).tobytes(), wav.getframerate()
+            return wav.readframes(wav.getnframes()), wav.getframerate()
 
     try:
         pcm_bytes, sample_rate = await loop.run_in_executor(None, _generate)
@@ -712,10 +707,10 @@ async def _synthesise_chatterbox(
         logger.warning(f"[{voice_id}] Client disconnected before audio could be sent: {exc}")
         return
 
-    # Peak-normalize to -1.0 dBFS (0.89) to prevent inter-sample clipping and maximize clarity
+    # Soft ceiling to prevent inter-sample clipping without modifying dynamics
     peak = np.max(np.abs(audio_array))
-    if peak > 1e-4:
-        audio_array = (audio_array / peak) * 0.89
+    if peak > 0.95:
+        audio_array = (audio_array / peak) * 0.95
 
     pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
     pcm_bytes = pcm_int16.tobytes()
@@ -810,9 +805,6 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
         for audio_array in chunks:
             if audio_array is None or len(audio_array) == 0:
                 continue
-            peak = np.max(np.abs(audio_array))
-            if peak > 1e-4:
-                audio_array = (audio_array / peak) * 0.89
             pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
             try:
                 await websocket.send_bytes(pcm_int16.tobytes())
@@ -995,9 +987,6 @@ async def synthesise_and_stream(
         for audio_array in chunks:
             if audio_array is None or len(audio_array) == 0:
                 continue
-            peak = np.max(np.abs(audio_array))
-            if peak > 1e-4:
-                audio_array = (audio_array / peak) * 0.89
             pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
             try:
                 await websocket.send_bytes(pcm_int16.tobytes())
