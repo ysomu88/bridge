@@ -8,71 +8,22 @@
 ## Architecture
 
 ```mermaid
-flowchart TD
-    subgraph Client ["Client Device (Browser / Mobile)"]
-        Mic["Microphone Input<br/>(Float32 PCM, 16 kHz)"]
-        VAD_Client["Client VAD Gate<br/>(RMS energy calculation)"]
-        Audio_Out["Web Audio API<br/>(Low-latency playback)"]
-    end
-
-    subgraph Transport ["Full-Duplex Transport"]
-        WS_In["WebSocket /ws/stream<br/>(Raw PCM audio frames)"]
-        WS_Out["WebSocket Stream<br/>(Raw int16 PCM + JSON subtitles)"]
-    end
-
-    subgraph Server ["Local GPU Server (RTX 3070 Ti, 8GB VRAM)"]
-        VAD_Server["FastAPI VAD Session<br/>(Silence threshold: -40 dBFS, 500ms pause)"]
-        STT["faster-whisper base<br/>(CUDA int8, ~350 MB VRAM)"]
-        LLM["Ollama llama3.2 3B<br/>(Q4 quantized, ~2.0 GB VRAM)"]
-        
-        subgraph TTS ["TTS Synthesis Pipeline"]
-            Router{"Voice Mode?"}
-            Chatterbox["Chatterbox Multilingual<br/>(Zero-shot voice cloning, ~2-3 GB VRAM)"]
-            Kokoro["Kokoro-82M ONNX + eSpeak NG<br/>(9 languages, ~250 MB VRAM)"]
-            Piper["Piper TTS<br/>(German / Korean, CPU-only)"]
-        end
-    end
-
-    Mic --> VAD_Client
-    VAD_Client -->|"Audio Chunks"| WS_In
-    WS_In --> VAD_Server
-    VAD_Server -->|"Utterance Buffer"| STT
-    STT -->|"Source Text"| LLM
-    LLM -->|"Translated Text"| Router
-    Router -->|"Cloned Voice Active"| Chatterbox
-    Router -->|"Default Preset"| Kokoro
-    Router -->|"German / Korean Preset"| Piper
-    Chatterbox --> WS_Out
-    Kokoro --> WS_Out
-    Piper --> WS_Out
-    WS_Out --> Audio_Out
-```
-
-### End-to-End Latency & Execution Sequence
-
-```mermaid
 sequenceDiagram
     autonumber
     actor User as Speaker (User)
     participant Client as Browser (index.html)
-    participant Server as FastAPI (server.py)
-    participant STT as faster-whisper (CUDA)
-    participant LLM as Llama 3.2 (Ollama)
-    participant TTS as Chatterbox / Kokoro
+    participant Server as Local GPU Server (RTX 3070 Ti)
     
-    User->>Client: Speaks phrase and pauses
-    Client->>Server: Streams raw Float32 PCM over WebSocket
-    Note over Server: VAD detects 500ms silence trigger
-    Server->>STT: Transcribe buffer (~0.4-0.8s)
-    STT-->>Server: "Hello, how are you?"
-    Server->>Client: Subtitle JSON (Source text)
-    Server->>LLM: Translate to target language (~0.6-1.5s)
-    LLM-->>Server: "Hola, ¿cómo estás?"
-    Server->>Client: Subtitle JSON (Translated text)
-    Server->>TTS: Synthesize voice (~3.0-5.5s Chatterbox / ~0.4s Kokoro)
-    TTS-->>Server: Raw int16 PCM audio chunks
-    Server->>Client: Binary PCM streaming over WebSocket
-    Client->>User: Audio playback (Cloned or Preset voice)
+    User->>Client: Speaks sentence and pauses
+    Client->>Server: Streams raw Float32 PCM (WebSocket)
+    Note over Server: Silence detected (>500ms)
+    Note over Server: 1. faster-whisper STT (~0.4–0.8s)
+    Server->>Client: Live Transcription Subtitle
+    Note over Server: 2. Llama 3.2 Translation (~0.6–1.5s)
+    Server->>Client: Translated Text Subtitle
+    Note over Server: 3. Chatterbox Voice Cloning (~3–5s)
+    Server->>Client: Streams Raw PCM Audio
+    Client->>User: Plays translation in user's cloned voice
 ```
 
 ### Component Tree Overview
@@ -340,7 +291,7 @@ This section details how to replicate and run the Bridge server on a new machine
 Bridge includes an automated installer that handles the entire multi-step setup (PyTorch CUDA 12.4, Chatterbox voice cloning, numba/numpy overrides, and model weight downloads) in a single command:
 
 ```powershell
-.\setup.ps1
+.\scripts\setup.ps1
 ```
 *(or run `.\setup.bat` from CMD, or `.\technical-setup\setup.ps1`)*
 
@@ -391,7 +342,7 @@ ollama pull llama3.2
 ### Option A: One-click local launch
 
 ```powershell
-.\start.ps1
+.\scripts\start.ps1
 ```
 
 Opens Ollama in a separate terminal, waits until it actually responds on `localhost:11434`, then activates the environment and starts the server. (On a cold start Ollama can take a while; the script polls for up to ~30 seconds before stopping with a clear error.)
@@ -446,17 +397,17 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 |---|---|
 | `server.py` | FastAPI backend: WebSocket, Whisper STT, Ollama translation, Kokoro/Piper/Chatterbox TTS |
 | `index.html` | Browser client: mic capture, VAD, subtitle display, audio playback |
-| `setup.ps1` / `setup.bat` | Automated 1-click environment installer and model downloader |
-| `start.ps1` | One-click local launch: boots Ollama, waits for it, starts the server |
-| `run_bridge.ps1` | Standalone public-tunnel launcher (thin wrapper on `bridge-remote.ps1`) |
-| `bridge-remote.ps1` | Remote control: start / stop / status / logs / shutdown the stack from your phone |
-| `bridge.cmd` | Short entry point: with the folder on your `PATH`, type `bridge start` / `bridge stop` |
-| `setup-remote-access.ps1` | One-time elevated setup: Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
-| `restart-tailscale.ps1` | Recovery helper: a Tailscale backend stuck in `NoState` |
-| `diagnose-ssh-firewall.ps1` | Troubleshooting report for SSH-over-Tailscale connectivity |
 | `requirements.txt` | Python dependencies |
 | `overrides.txt` | Dependency constraints (pins `numpy>=2.0.2,<3` for numba compatibility) |
+| `scripts/` | Operational, administration, and diagnostic scripts |
+| `scripts/start.ps1` | One-click local launch: boots Ollama, waits for it, starts the server |
+| `scripts/bridge-remote.ps1` | Remote control: start / stop / status / logs / shutdown the stack from your phone |
+| `scripts/bridge.cmd` | Short entry point: with `scripts/` on your `PATH`, type `bridge start` / `bridge stop` |
+| `scripts/setup.ps1` / `setup.bat` | Automated 1-click environment installer and model downloader |
 | `scripts/download_models.py` | Automated model downloader for Kokoro ONNX and Piper voice files |
+| `scripts/setup-remote-access.ps1` | One-time elevated setup: Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
+| `scripts/restart-tailscale.ps1` | Recovery helper: a Tailscale backend stuck in `NoState` |
+| `scripts/diagnose-ssh-firewall.ps1` | Troubleshooting report for SSH-over-Tailscale connectivity |
 | `technical-setup/` | Technical setup guides, architecture reference, and installer scripts |
 | `voice_samples/` | Locally recorded voice cloning reference clips (gitignored, swept at startup/shutdown) |
 | `piper_voices/` | Optional Piper TTS voices: German Thorsten and optional Korean KSS |
@@ -517,7 +468,7 @@ The WebM→WAV conversion failed in both `torchaudio` and the `soundfile` fallba
 Expected behavior per Chatterbox's own documentation. If the reference clip's language differs from the target translation language, the output can inherit the reference's accent. `cfg_weight=0.3` mitigates this but doesn't eliminate it. For best fidelity, record the reference sample in your most commonly used target language.
 
 ### "Ollama not reachable at localhost:11434"
-Run `ollama serve` in a separate terminal before starting the server, or use `.\start.ps1` which starts Ollama automatically.
+Run `ollama serve` in a separate terminal before starting the server, or use `.\scripts\start.ps1` which starts Ollama automatically.
 
 ### "llama3.2 not found"
 Run `ollama pull llama3.2`.

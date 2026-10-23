@@ -51,10 +51,15 @@ param(
 # security-sensitive change. Each step is verified explicitly instead.
 $ErrorActionPreference = 'Continue'
 
-$RepoRoot     = $PSScriptRoot
+$ScriptDir    = $PSScriptRoot
+if (Test-Path (Join-Path $ScriptDir '..\server.py')) {
+    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir '..')).Path
+} else {
+    $RepoRoot = $ScriptDir
+}
 $LogDir       = Join-Path $RepoRoot 'remote_logs'
 $LogFile      = Join-Path $LogDir 'setup.log'
-$RemoteScript = Join-Path $RepoRoot 'bridge-remote.ps1'
+$RemoteScript = Join-Path $ScriptDir 'bridge-remote.ps1'
 $TaskName     = 'BridgeStack'
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
