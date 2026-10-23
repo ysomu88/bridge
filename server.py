@@ -612,24 +612,6 @@ async def _synthesise_piper(
 # ---------------------------------------------------------------------------
 # TTS via Chatterbox Multilingual (voice cloning)
 # ---------------------------------------------------------------------------
-def _trim_trailing_silence(audio: np.ndarray, sample_rate: int, threshold_rms: float = 0.008, pad_ms: int = 200) -> np.ndarray:
-    """Trim trailing vocoder breath/whoosh artifacts after speech has ended."""
-    win = int(sample_rate * 0.05)  # 50ms window
-    last_idx = len(audio)
-    for i in range(len(audio) - win, 0, -win):
-        rms = np.sqrt(np.mean(audio[i : i + win] ** 2))
-        if rms >= threshold_rms:
-            pad = int(sample_rate * (pad_ms / 1000.0))
-            last_idx = min(len(audio), i + win + pad)
-            break
-    trimmed = audio[:last_idx].copy()
-    fade = min(int(sample_rate * 0.015), len(trimmed))
-    if fade > 0:
-        ramp = np.linspace(1.0, 0.0, fade, dtype=np.float32)
-        trimmed[-fade:] *= ramp
-    return trimmed
-
-
 async def _synthesise_chatterbox(
     text: str,
     target_lang: str,
@@ -718,7 +700,6 @@ async def _synthesise_chatterbox(
 
     # wav_tensor is a torch tensor shaped [1, n_samples], float32 in [-1, 1]
     audio_array = wav_tensor.squeeze(0).cpu().numpy()
-    audio_array = _trim_trailing_silence(audio_array, sample_rate)
 
     try:
         await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
@@ -1570,14 +1551,7 @@ async def root():
     index_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     try:
         with open(index_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(
-                content=f.read(),
-                headers={
-                    "Cache-Control": "no-cache, no-store, must-revalidate",
-                    "Pragma": "no-cache",
-                    "Expires": "0",
-                },
-            )
+            return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>index.html not found</h1>", status_code=404)
 
