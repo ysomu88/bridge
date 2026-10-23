@@ -89,6 +89,25 @@ Bridge processes your speech through an on-premise neural pipeline:
 
 **Cascade latency:** End-to-end processing typically takes **~5–8 seconds** per sentence depending on sentence length and server load. Watch the **Processing…** badge in the interface to monitor active translation.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Speaker (User)
+    participant Client as Browser (index.html)
+    participant Server as Local GPU Server (RTX 3070 Ti)
+    
+    User->>Client: Speaks sentence and pauses
+    Client->>Server: Streams raw Float32 PCM (WebSocket)
+    Note over Server: Silence detected (>500ms)
+    Note over Server: 1. faster-whisper STT (~0.4–0.8s)
+    Server->>Client: Live Transcription Subtitle
+    Note over Server: 2. Llama 3.2 Translation (~0.6–1.5s)
+    Server->>Client: Translated Text Subtitle
+    Note over Server: 3. Chatterbox Voice Cloning (~3–5s)
+    Server->>Client: Streams Raw PCM Audio
+    Client->>User: Plays translation in user's cloned voice
+```
+
 ---
 
 ## ❓ Tips for the Best Experience

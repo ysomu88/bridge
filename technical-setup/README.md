@@ -7,6 +7,76 @@
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    subgraph Client ["Client Device (Browser / Mobile)"]
+        Mic["Microphone Input<br/>(Float32 PCM, 16 kHz)"]
+        VAD_Client["Client VAD Gate<br/>(RMS energy calculation)"]
+        Audio_Out["Web Audio API<br/>(Low-latency playback)"]
+    end
+
+    subgraph Transport ["Full-Duplex Transport"]
+        WS_In["WebSocket /ws/stream<br/>(Raw PCM audio frames)"]
+        WS_Out["WebSocket Stream<br/>(Raw int16 PCM + JSON subtitles)"]
+    end
+
+    subgraph Server ["Local GPU Server (RTX 3070 Ti, 8GB VRAM)"]
+        VAD_Server["FastAPI VAD Session<br/>(Silence threshold: -40 dBFS, 500ms pause)"]
+        STT["faster-whisper base<br/>(CUDA int8, ~350 MB VRAM)"]
+        LLM["Ollama llama3.2 3B<br/>(Q4 quantized, ~2.0 GB VRAM)"]
+        
+        subgraph TTS ["TTS Synthesis Pipeline"]
+            Router{"Voice Mode?"}
+            Chatterbox["Chatterbox Multilingual<br/>(Zero-shot voice cloning, ~2-3 GB VRAM)"]
+            Kokoro["Kokoro-82M ONNX + eSpeak NG<br/>(9 languages, ~250 MB VRAM)"]
+            Piper["Piper TTS<br/>(German / Korean, CPU-only)"]
+        end
+    end
+
+    Mic --> VAD_Client
+    VAD_Client -->|"Audio Chunks"| WS_In
+    WS_In --> VAD_Server
+    VAD_Server -->|"Utterance Buffer"| STT
+    STT -->|"Source Text"| LLM
+    LLM -->|"Translated Text"| Router
+    Router -->|"Cloned Voice Active"| Chatterbox
+    Router -->|"Default Preset"| Kokoro
+    Router -->|"German / Korean Preset"| Piper
+    Chatterbox --> WS_Out
+    Kokoro --> WS_Out
+    Piper --> WS_Out
+    WS_Out --> Audio_Out
+```
+
+### End-to-End Latency & Execution Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Speaker (User)
+    participant Client as Browser (index.html)
+    participant Server as FastAPI (server.py)
+    participant STT as faster-whisper (CUDA)
+    participant LLM as Llama 3.2 (Ollama)
+    participant TTS as Chatterbox / Kokoro
+    
+    User->>Client: Speaks phrase and pauses
+    Client->>Server: Streams raw Float32 PCM over WebSocket
+    Note over Server: VAD detects 500ms silence trigger
+    Server->>STT: Transcribe buffer (~0.4-0.8s)
+    STT-->>Server: "Hello, how are you?"
+    Server->>Client: Subtitle JSON (Source text)
+    Server->>LLM: Translate to target language (~0.6-1.5s)
+    LLM-->>Server: "Hola, ¿cómo estás?"
+    Server->>Client: Subtitle JSON (Translated text)
+    Server->>TTS: Synthesize voice (~3.0-5.5s Chatterbox / ~0.4s Kokoro)
+    TTS-->>Server: Raw int16 PCM audio chunks
+    Server->>Client: Binary PCM streaming over WebSocket
+    Client->>User: Audio playback (Cloned or Preset voice)
+```
+
+### Component Tree Overview
+
 ```
 Browser mic (Raw Float32 PCM stream)
         │
