@@ -194,13 +194,16 @@ async def lifespan(app: FastAPI):
 
             chatterbox_model.s3gen.inference = _timed_s3gen_inference
 
-            def _bypass_watermark(signal, *args, **kwargs):
-                # PerthImplicitWatermarker injects severe phase distortion, 13 dB SNR noise,
-                # and trailing hiss into the audio. Bypassing it returns clean S3Gen vocoder fidelity.
-                return signal
+            _orig_apply_watermark = chatterbox_model.watermarker.apply_watermark
 
-            chatterbox_model.watermarker.apply_watermark = _bypass_watermark
-            logger.info("✅ Chatterbox PerthNet watermarking bypassed for pristine audio quality.")
+            def _timed_apply_watermark(*args, **kwargs):
+                t0 = time.monotonic()
+                result = _orig_apply_watermark(*args, **kwargs)
+                logger.info(f"[chatterbox] watermarker.apply_watermark: {time.monotonic() - t0:.1f}s")
+                return result
+
+            chatterbox_model.watermarker.apply_watermark = _timed_apply_watermark
+            logger.info("✅ Chatterbox instrumented with vocoder/watermark timing.")
         except Exception as exc:
             logger.warning(f"Could not instrument Chatterbox timing (non-fatal): {exc}")
 
@@ -583,19 +586,25 @@ async def _synthesise_piper(
     except Exception:
         return
 
-    audio_duration = len(pcm_bytes) / float(sample_rate * 2)
+    # Stream in chunks
+    CHUNK = 4800  # ~100 ms at 22050 Hz (int16 = 2 bytes per sample)
     state.tts_playing = True
     try:
-        await websocket.send_bytes(pcm_bytes)
-        await asyncio.sleep(audio_duration + 0.4)
-    except Exception:
-        logger.warning("WebSocket closed during Piper TTS streaming.")
+        for i in range(0, len(pcm_bytes), CHUNK * 2):
+            chunk = pcm_bytes[i : i + CHUNK * 2]
+            if not chunk:
+                continue
+            try:
+                await websocket.send_bytes(chunk)
+            except Exception:
+                logger.warning("WebSocket closed during Piper TTS streaming.")
+                return
     finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
         state.tts_playing = False
-        state.flush_buffer()
-        state.silence_start = None
-        state.speech_start = None
-        state.has_voice = False
 
     logger.info(f"🔊 Piper TTS stream complete ({target_lang}).")
 
@@ -603,6 +612,24 @@ async def _synthesise_piper(
 # ---------------------------------------------------------------------------
 # TTS via Chatterbox Multilingual (voice cloning)
 # ---------------------------------------------------------------------------
+def _trim_trailing_silence(audio: np.ndarray, sample_rate: int, threshold_rms: float = 0.008, pad_ms: int = 200) -> np.ndarray:
+    """Trim trailing vocoder breath/whoosh artifacts after speech has ended."""
+    win = int(sample_rate * 0.05)  # 50ms window
+    last_idx = len(audio)
+    for i in range(len(audio) - win, 0, -win):
+        rms = np.sqrt(np.mean(audio[i : i + win] ** 2))
+        if rms >= threshold_rms:
+            pad = int(sample_rate * (pad_ms / 1000.0))
+            last_idx = min(len(audio), i + win + pad)
+            break
+    trimmed = audio[:last_idx].copy()
+    fade = min(int(sample_rate * 0.015), len(trimmed))
+    if fade > 0:
+        ramp = np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        trimmed[-fade:] *= ramp
+    return trimmed
+
+
 async def _synthesise_chatterbox(
     text: str,
     target_lang: str,
@@ -691,6 +718,7 @@ async def _synthesise_chatterbox(
 
     # wav_tensor is a torch tensor shaped [1, n_samples], float32 in [-1, 1]
     audio_array = wav_tensor.squeeze(0).cpu().numpy()
+    audio_array = _trim_trailing_silence(audio_array, sample_rate)
 
     try:
         await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
@@ -698,44 +726,27 @@ async def _synthesise_chatterbox(
         logger.warning(f"[{voice_id}] Client disconnected before audio could be sent: {exc}")
         return
 
-    # Soft ceiling to prevent inter-sample clipping without modifying dynamics
-    peak = np.max(np.abs(audio_array))
-    if peak > 0.95:
-        audio_array = (audio_array / peak) * 0.95
-
-    # Smooth 5ms edge fade-in / fade-out to prevent DAC start/stop pops
-    fade_len = min(120, len(audio_array) // 4)
-    if fade_len > 0:
-        ramp = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
-        audio_array[:fade_len] *= ramp
-        audio_array[-fade_len:] *= ramp[::-1]
-
-    # Save a temporary debug WAV for audio analysis (ignored by git in voice_samples/)
-    try:
-        import soundfile as sf
-        debug_wav_path = os.path.join(VOICE_SAMPLES_DIR, "last_tts_debug.wav")
-        sf.write(debug_wav_path, audio_array, sample_rate)
-    except Exception as exc:
-        logger.debug(f"Could not save debug WAV: {exc}")
-
     pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
     pcm_bytes = pcm_int16.tobytes()
 
-    audio_duration = len(audio_array) / float(sample_rate)
+    CHUNK = 4800  # ~100-200ms depending on sample rate, 2 bytes/sample
     state.tts_playing = True
     try:
-        # Send full utterance as an unbroken buffer to prevent resampler chunking clicks on mobile
-        await websocket.send_bytes(pcm_bytes)
-        # Keep echo guard armed for the exact playback duration + 400ms margin to prevent mic feedback
-        await asyncio.sleep(audio_duration + 0.4)
-    except Exception:
-        logger.warning("WebSocket closed during Chatterbox TTS streaming.")
+        for i in range(0, len(pcm_bytes), CHUNK * 2):
+            chunk = pcm_bytes[i : i + CHUNK * 2]
+            if not chunk:
+                continue
+            try:
+                await websocket.send_bytes(chunk)
+            except Exception:
+                logger.warning("WebSocket closed during Chatterbox TTS streaming.")
+                return
     finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
         state.tts_playing = False
-        state.flush_buffer()
-        state.silence_start = None
-        state.speech_start = None
-        state.has_voice = False
 
     logger.info(f"🎙️  Chatterbox cloned-voice TTS stream complete ({target_lang}, voice={voice_id}).")
 
@@ -787,15 +798,14 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
 
     def _generate():
         samples, sample_rate = kokoro_pipeline.create(text, voice=voice_code, speed=1.0, lang=kokoro_lang)
-        return samples, sample_rate
+        chunk_size = 2400
+        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
+        return chunks, sample_rate
 
     try:
-        samples, sample_rate = await loop.run_in_executor(None, _generate)
+        chunks, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Kokoro fallback executor error: {exc}")
-        return
-
-    if samples is None or len(samples) == 0:
         return
 
     # Send the actual sample rate so the client can adapt (same as the main Kokoro path).
@@ -804,26 +814,22 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
     except Exception:
         return
 
-    peak = np.max(np.abs(samples))
-    if peak > 0.95:
-        samples = (samples / peak) * 0.95
-
-    pcm_int16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
-    pcm_bytes = pcm_int16.tobytes()
-
-    audio_duration = len(samples) / float(sample_rate)
     state.tts_playing = True
     try:
-        await websocket.send_bytes(pcm_bytes)
-        await asyncio.sleep(audio_duration + 0.4)
-    except Exception:
-        logger.warning("WebSocket closed during fallback TTS streaming.")
+        for audio_array in chunks:
+            if audio_array is None or len(audio_array) == 0:
+                continue
+            pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+            try:
+                await websocket.send_bytes(pcm_int16.tobytes())
+            except Exception:
+                return
     finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
         state.tts_playing = False
-        state.flush_buffer()
-        state.silence_start = None
-        state.speech_start = None
-        state.has_voice = False
 
 
 # ---------------------------------------------------------------------------
@@ -972,42 +978,41 @@ async def synthesise_and_stream(
         samples, sample_rate = kokoro_pipeline.create(
             translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
         )
-        return samples, sample_rate
+        chunk_size = 2400
+        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
+        return chunks, sample_rate
 
     try:
-        samples, sample_rate = await loop.run_in_executor(None, _generate)
+        chunks, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Kokoro executor error: {exc}")
         return
 
-    if samples is None or len(samples) == 0:
-        return
-
+    # Send the actual sample rate so the client can adapt — same as Piper/Chatterbox.
+    # Without this, a session that previously used Piper (22050 Hz) or Chatterbox
+    # would play Kokoro's 24000 Hz audio at the wrong rate (pitch/speed distortion).
     try:
         await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
     except Exception:
         return
 
-    peak = np.max(np.abs(samples))
-    if peak > 0.95:
-        samples = (samples / peak) * 0.95
-
-    pcm_int16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
-    pcm_bytes = pcm_int16.tobytes()
-
-    audio_duration = len(samples) / float(sample_rate)
     state.tts_playing = True
     try:
-        await websocket.send_bytes(pcm_bytes)
-        await asyncio.sleep(audio_duration + 0.4)
-    except Exception:
-        logger.warning("WebSocket closed during TTS streaming.")
+        for audio_array in chunks:
+            if audio_array is None or len(audio_array) == 0:
+                continue
+            pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+            try:
+                await websocket.send_bytes(pcm_int16.tobytes())
+            except Exception:
+                logger.warning("WebSocket closed during TTS streaming.")
+                return
     finally:
+        # Keep the echo guard armed briefly after the last chunk — the client
+        # continues playing buffered audio for a few hundred ms, so the mic may
+        # still be hearing our output. Don't let that tail re-trigger VAD.
+        await asyncio.sleep(0.5)
         state.tts_playing = False
-        state.flush_buffer()
-        state.silence_start = None
-        state.speech_start = None
-        state.has_voice = False
 
     logger.info("🔊 TTS stream complete.")
 
@@ -1114,11 +1119,6 @@ async def upload_voice_sample(file: UploadFile = File(...)):
                 raise ValueError("No audio frames decoded")
 
             audio = _np.concatenate(frames)
-            # Remove DC offset & peak-normalize to -1.0 dBFS (0.89) for clean, strong speaker embedding
-            audio = audio - _np.mean(audio)
-            peak = _np.max(_np.abs(audio))
-            if peak > 1e-4:
-                audio = audio * (0.89 / peak)
             pcm = (_np.clip(audio, -1.0, 1.0) * 32767).astype(_np.int16)
 
             with _wave.open(wav_path, "wb") as wf:
@@ -1133,13 +1133,6 @@ async def upload_voice_sample(file: UploadFile = File(...)):
         try:
             import torchaudio as ta
             waveform, sr = ta.load(raw_path)
-            sig = waveform.mean(dim=0).cpu().numpy()
-            sig = sig - _np.mean(sig)
-            peak = _np.max(_np.abs(sig))
-            if peak > 1e-4:
-                sig = sig * (0.89 / peak)
-            import torch as _torch
-            waveform = _torch.from_numpy(sig).unsqueeze(0)
             ta.save(wav_path, waveform, sr)
             return
         except Exception as exc:
@@ -1147,12 +1140,6 @@ async def upload_voice_sample(file: UploadFile = File(...)):
 
         import soundfile as sf
         data, sr = sf.read(raw_path)
-        if hasattr(data, "ndim") and data.ndim > 1:
-            data = data.mean(axis=1)
-        data = data - _np.mean(data)
-        peak = _np.max(_np.abs(data))
-        if peak > 1e-4:
-            data = data * (0.89 / peak)
         sf.write(wav_path, data, sr)
 
     try:
@@ -1435,10 +1422,7 @@ async def ws_stream(websocket: WebSocket):
 
             # ── Binary audio chunk ─────────────────────────────────────
             if message.get("bytes"):
-                # Ignore incoming mic chunks while our own TTS is playing so speaker
-                # output and room noise during playback never enter the utterance buffer.
-                if not state.tts_playing:
-                    state.append_chunk(message["bytes"])
+                state.append_chunk(message["bytes"])
 
             # ── VAD energy report from browser ─────────────────────────
             elif message.get("text"):
