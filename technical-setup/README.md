@@ -291,7 +291,7 @@ This section details how to replicate and run the Bridge server on a new machine
 Bridge includes an automated installer that handles the entire multi-step setup (PyTorch CUDA 12.4, Chatterbox voice cloning, numba/numpy overrides, and model weight downloads) in a single command:
 
 ```powershell
-.\scripts\setup.ps1
+.\technical-setup\setup.ps1
 ```
 *(or run `.\setup.bat` from CMD, or `.\technical-setup\setup.ps1`)*
 
@@ -329,7 +329,7 @@ uv pip install conformer diffusers einops rotary-embedding-torch encodec vector-
 uv pip install -r overrides.txt
 
 # 6. Fetch model assets
-python scripts/download_models.py
+python technical-setup/download_models.py
 
 # 7. Pull Ollama translation model
 ollama pull llama3.2

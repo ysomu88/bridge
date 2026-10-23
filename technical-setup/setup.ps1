@@ -96,7 +96,7 @@ Write-Success "3-step dependency installation complete!"
 
 # 5. Fetch required model files
 Write-Step "Downloading model files (Kokoro ONNX & Piper voices)..."
-$DownloadScript = Join-Path $RootDir "scripts\download_models.py"
+$DownloadScript = Join-Path $ScriptDir "download_models.py"
 $DownloadArgs = @()
 if ($ForceReinstall) { $DownloadArgs += "--force" }
 if ($IncludeKorean) { $DownloadArgs += "--include-korean" }
