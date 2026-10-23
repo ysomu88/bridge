@@ -83,4 +83,6 @@ activate/
 
 # ── Local agent skills & video render output ──────────────────────────────
 .agents/
-brag-output/
+brag-output/*
+!brag-output/*.txt
+!brag-output/*.md
