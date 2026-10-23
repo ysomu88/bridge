@@ -194,16 +194,13 @@ async def lifespan(app: FastAPI):
 
             chatterbox_model.s3gen.inference = _timed_s3gen_inference
 
-            _orig_apply_watermark = chatterbox_model.watermarker.apply_watermark
+            def _bypass_watermark(signal, *args, **kwargs):
+                # PerthImplicitWatermarker injects severe phase distortion, 13 dB SNR noise,
+                # and trailing hiss into the audio. Bypassing it returns clean S3Gen vocoder fidelity.
+                return signal
 
-            def _timed_apply_watermark(*args, **kwargs):
-                t0 = time.monotonic()
-                result = _orig_apply_watermark(*args, **kwargs)
-                logger.info(f"[chatterbox] watermarker.apply_watermark: {time.monotonic() - t0:.1f}s")
-                return result
-
-            chatterbox_model.watermarker.apply_watermark = _timed_apply_watermark
-            logger.info("✅ Chatterbox instrumented with vocoder/watermark timing.")
+            chatterbox_model.watermarker.apply_watermark = _bypass_watermark
+            logger.info("✅ Chatterbox PerthNet watermarking bypassed for pristine audio quality.")
         except Exception as exc:
             logger.warning(f"Could not instrument Chatterbox timing (non-fatal): {exc}")
 
@@ -595,6 +592,10 @@ async def _synthesise_piper(
         logger.warning("WebSocket closed during Piper TTS streaming.")
     finally:
         state.tts_playing = False
+        state.flush_buffer()
+        state.silence_start = None
+        state.speech_start = None
+        state.has_voice = False
 
     logger.info(f"🔊 Piper TTS stream complete ({target_lang}).")
 
@@ -702,6 +703,21 @@ async def _synthesise_chatterbox(
     if peak > 0.95:
         audio_array = (audio_array / peak) * 0.95
 
+    # Smooth 5ms edge fade-in / fade-out to prevent DAC start/stop pops
+    fade_len = min(120, len(audio_array) // 4)
+    if fade_len > 0:
+        ramp = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+        audio_array[:fade_len] *= ramp
+        audio_array[-fade_len:] *= ramp[::-1]
+
+    # Save a temporary debug WAV for audio analysis (ignored by git in voice_samples/)
+    try:
+        import soundfile as sf
+        debug_wav_path = os.path.join(VOICE_SAMPLES_DIR, "last_tts_debug.wav")
+        sf.write(debug_wav_path, audio_array, sample_rate)
+    except Exception as exc:
+        logger.debug(f"Could not save debug WAV: {exc}")
+
     pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
     pcm_bytes = pcm_int16.tobytes()
 
@@ -716,6 +732,10 @@ async def _synthesise_chatterbox(
         logger.warning("WebSocket closed during Chatterbox TTS streaming.")
     finally:
         state.tts_playing = False
+        state.flush_buffer()
+        state.silence_start = None
+        state.speech_start = None
+        state.has_voice = False
 
     logger.info(f"🎙️  Chatterbox cloned-voice TTS stream complete ({target_lang}, voice={voice_id}).")
 
@@ -800,6 +820,10 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
         logger.warning("WebSocket closed during fallback TTS streaming.")
     finally:
         state.tts_playing = False
+        state.flush_buffer()
+        state.silence_start = None
+        state.speech_start = None
+        state.has_voice = False
 
 
 # ---------------------------------------------------------------------------
@@ -980,6 +1004,10 @@ async def synthesise_and_stream(
         logger.warning("WebSocket closed during TTS streaming.")
     finally:
         state.tts_playing = False
+        state.flush_buffer()
+        state.silence_start = None
+        state.speech_start = None
+        state.has_voice = False
 
     logger.info("🔊 TTS stream complete.")
 
@@ -1407,7 +1435,10 @@ async def ws_stream(websocket: WebSocket):
 
             # ── Binary audio chunk ─────────────────────────────────────
             if message.get("bytes"):
-                state.append_chunk(message["bytes"])
+                # Ignore incoming mic chunks while our own TTS is playing so speaker
+                # output and room noise during playback never enter the utterance buffer.
+                if not state.tts_playing:
+                    state.append_chunk(message["bytes"])
 
             # ── VAD energy report from browser ─────────────────────────
             elif message.get("text"):
