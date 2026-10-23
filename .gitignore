@@ -80,3 +80,7 @@ huggingface.token
 # ── Local virtualenvs ─────────────────────────────────────────────────────
 activate/
 
+
+# ── Local agent skills & video render output ──────────────────────────────
+.agents/
+brag-output/
