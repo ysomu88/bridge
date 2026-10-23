@@ -767,14 +767,15 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
 
     def _generate():
         samples, sample_rate = kokoro_pipeline.create(text, voice=voice_code, speed=1.0, lang=kokoro_lang)
-        chunk_size = 2400
-        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
-        return chunks, sample_rate
+        return samples, sample_rate
 
     try:
-        chunks, sample_rate = await loop.run_in_executor(None, _generate)
+        samples, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Kokoro fallback executor error: {exc}")
+        return
+
+    if samples is None or len(samples) == 0:
         return
 
     # Send the actual sample rate so the client can adapt (same as the main Kokoro path).
@@ -783,21 +784,21 @@ async def _synthesise_chatterbox_fallback(text: str, target_lang: str, websocket
     except Exception:
         return
 
+    peak = np.max(np.abs(samples))
+    if peak > 0.95:
+        samples = (samples / peak) * 0.95
+
+    pcm_int16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+    pcm_bytes = pcm_int16.tobytes()
+
+    audio_duration = len(samples) / float(sample_rate)
     state.tts_playing = True
     try:
-        for audio_array in chunks:
-            if audio_array is None or len(audio_array) == 0:
-                continue
-            pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
-            try:
-                await websocket.send_bytes(pcm_int16.tobytes())
-            except Exception:
-                return
+        await websocket.send_bytes(pcm_bytes)
+        await asyncio.sleep(audio_duration + 0.4)
+    except Exception:
+        logger.warning("WebSocket closed during fallback TTS streaming.")
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
         state.tts_playing = False
 
 
@@ -947,40 +948,37 @@ async def synthesise_and_stream(
         samples, sample_rate = kokoro_pipeline.create(
             translated_text, voice=voice_code, speed=1.0, lang=kokoro_lang
         )
-        chunk_size = 2400
-        chunks = [samples[i : i + chunk_size] for i in range(0, len(samples), chunk_size)]
-        return chunks, sample_rate
+        return samples, sample_rate
 
     try:
-        chunks, sample_rate = await loop.run_in_executor(None, _generate)
+        samples, sample_rate = await loop.run_in_executor(None, _generate)
     except Exception as exc:
         logger.error(f"Kokoro executor error: {exc}")
         return
 
-    # Send the actual sample rate so the client can adapt — same as Piper/Chatterbox.
-    # Without this, a session that previously used Piper (22050 Hz) or Chatterbox
-    # would play Kokoro's 24000 Hz audio at the wrong rate (pitch/speed distortion).
+    if samples is None or len(samples) == 0:
+        return
+
     try:
         await websocket.send_text(json.dumps({"type": "tts_config", "sample_rate": sample_rate}))
     except Exception:
         return
 
+    peak = np.max(np.abs(samples))
+    if peak > 0.95:
+        samples = (samples / peak) * 0.95
+
+    pcm_int16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+    pcm_bytes = pcm_int16.tobytes()
+
+    audio_duration = len(samples) / float(sample_rate)
     state.tts_playing = True
     try:
-        for audio_array in chunks:
-            if audio_array is None or len(audio_array) == 0:
-                continue
-            pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
-            try:
-                await websocket.send_bytes(pcm_int16.tobytes())
-            except Exception:
-                logger.warning("WebSocket closed during TTS streaming.")
-                return
+        await websocket.send_bytes(pcm_bytes)
+        await asyncio.sleep(audio_duration + 0.4)
+    except Exception:
+        logger.warning("WebSocket closed during TTS streaming.")
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
         state.tts_playing = False
 
     logger.info("🔊 TTS stream complete.")

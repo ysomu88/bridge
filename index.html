@@ -839,16 +839,17 @@
     // ── Web Audio playback ────────────────────────────────────────────
     function ensurePlaybackCtx() {
       if (!playbackCtx || playbackCtx.state === "closed") {
-        playbackCtx  = new AudioContext({ sampleRate: currentSampleRate });
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        playbackCtx = new AudioCtor();
         nextPlayTime = 0;
+      }
+      if (playbackCtx.state === "suspended") {
+        playbackCtx.resume().catch(() => {});
       }
     }
 
     function scheduleAudioChunk(int16Bytes) {
-      if (!playbackCtx || playbackCtx.state === "closed") {
-        playbackCtx = new AudioContext({ sampleRate: currentSampleRate });
-        nextPlayTime = 0;
-      }
+      ensurePlaybackCtx();
       const int16Arr = new Int16Array(int16Bytes);
       const float32  = new Float32Array(int16Arr.length);
       for (let i = 0; i < int16Arr.length; i++) float32[i] = int16Arr[i] / 32768.0;
@@ -913,19 +914,11 @@
               setStatus("listening");
             } else if (msg.type === "tts_config") {
               // Piper outputs at 22050 Hz, Chatterbox varies, Kokoro is 24000.
-              // recreate the context whenever the engine reports a new rate.
-              if (msg.sample_rate && msg.sample_rate !== currentSampleRate) {
+              // We do not recreate playbackCtx (recreating outside user gesture
+              // triggers mobile autoplay blocks and DAC clicks). AudioBuffer
+              // resamples automatically from currentSampleRate to hardware rate.
+              if (msg.sample_rate) {
                 currentSampleRate = msg.sample_rate;
-                if (playbackCtx && playbackCtx.state !== "closed") {
-                  playbackCtx.close();
-                }
-                playbackCtx = new AudioContext({ sampleRate: currentSampleRate });
-                nextPlayTime = 0;
-                // This recreate happens outside any user gesture (it's driven
-                // by a server message), so the fresh context can start
-                // "suspended"; resume as a best effort so the next stream
-                // isn't silent.
-                playbackCtx.resume().catch(() => {});
               }
             } else if (msg.type === "session_init" || msg.type === "voice_update") {
               // Reflect which voice the server is actually using for playback.
@@ -958,13 +951,7 @@
       // handler (inside the user gesture, before any await) so the browser
       // can't autoplay-block them, and their (comparatively slow on iOS)
       // setup cost overlaps the mic permission prompt instead of adding to it.
-      if (!playbackCtx || playbackCtx.state === "closed") {
-        playbackCtx = new AudioContext({ sampleRate: currentSampleRate });
-        nextPlayTime = 0;
-      }
-      if (playbackCtx.state === "suspended") {
-        playbackCtx.resume().catch(() => {});
-      }
+      ensurePlaybackCtx();
 
       // Create the capture context, still inside the gesture. Creating it
       // after an `await` (e.g. getUserMedia) loses that context, and Chrome's
