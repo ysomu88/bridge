@@ -6,6 +6,9 @@ Write-Host "  🚀 Waking up the Bridge Translation Stack...         " -Foregrou
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
 
+$RootDir = if (Test-Path (Join-Path $PSScriptRoot "..\server.py")) { (Resolve-Path (Join-Path $PSScriptRoot "..")).Path } else { $PSScriptRoot }
+Set-Location $RootDir
+
 # 1. Verify the Python virtual environment exists
 if (-not (Test-Path ".\.venv\Scripts\Activate.ps1")) {
     Write-Host "❌ Error: Virtual environment (.venv) not found!" -ForegroundColor Red

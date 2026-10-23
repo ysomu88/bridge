@@ -1,11 +1,32 @@
 # Bridge: Architecture & Technical Reference
 
-**Stack:** faster-whisper · Ollama (llama3.2) · Kokoro-82M ONNX · Piper TTS · Chatterbox Multilingual · eSpeak NG
+**Stack:** faster-whisper · Ollama (llama3.2) · Kokoro-82M ONNX · Piper TTS · Chatterbox Multilingual · eSpeak NG  
 **Target:** RTX 3070 Ti (8 GB VRAM) · Windows 11 · `uv` package manager · `localtunnel` for remote access
 
 ---
 
 ## Architecture
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Speaker (User)
+    participant Client as Browser (index.html)
+    participant Server as Local GPU Server (RTX 3070 Ti)
+    
+    User->>Client: Speaks sentence and pauses
+    Client->>Server: Streams raw Float32 PCM (WebSocket)
+    Note over Server: Silence detected (>500ms)
+    Note over Server: 1. faster-whisper STT (~0.4–0.8s)
+    Server->>Client: Live Transcription Subtitle
+    Note over Server: 2. Llama 3.2 Translation (~0.6–1.5s)
+    Server->>Client: Translated Text Subtitle
+    Note over Server: 3. Chatterbox Voice Cloning (~3–5s)
+    Server->>Client: Streams Raw PCM Audio
+    Client->>User: Plays translation in user's cloned voice
+```
+
+### Component Tree Overview
 
 ```
 Browser mic (Raw Float32 PCM stream)
@@ -261,6 +282,168 @@ Each WebSocket connection gets its own `SessionState`: isolated audio buffer, VA
 
 ---
 
+## 🚀 Setup & Machine Installation
+
+This section details how to replicate and run the Bridge server on a new machine or fresh environment.
+
+### Automated Installer (Recommended)
+
+Bridge includes an automated installer that handles the entire multi-step setup (PyTorch CUDA 12.4, Chatterbox voice cloning, numba/numpy overrides, and model weight downloads) in a single command:
+
+```powershell
+.\technical-setup\setup.ps1
+```
+*(or run `.\setup.bat` from CMD, or `.\technical-setup\setup.ps1`)*
+
+### Prerequisites
+
+- **Python 3.12** (managed via `uv`)
+- **NVIDIA GPU** with CUDA 12.x drivers (tested on RTX 3070 Ti, 8 GB VRAM)
+- **[Ollama](https://ollama.com)** installed locally
+- **[eSpeak NG](https://github.com/espeak-ng/espeak-ng/releases/latest)** installed (required for non-English Kokoro voice output)
+- **Node.js & npm** (optional, for remote tunnel via `winget install OpenJS.NodeJS`)
+
+> **Voice cloning note:** Voice cloning is optional and loads automatically if `chatterbox-tts` installs successfully. It adds roughly 2-3 GB VRAM on top of the base stack. If it fails to load, Bridge logs a warning and falls back to preset voices; nothing else breaks.
+
+### Manual Step-by-Step Installation
+
+If you prefer to configure the environment manually or need to debug individual packages:
+
+```powershell
+# 1. Create and activate virtual environment
+uv venv .venv --python 3.12
+.\.venv\Scripts\Activate.ps1
+
+# 2. Base dependencies
+uv pip install -r requirements.txt
+
+# 3. PyTorch with CUDA 12.4
+uv pip install --reinstall torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# 4. Chatterbox Multilingual TTS & dependencies (without dependency conflicts)
+uv pip install "chatterbox-tts>=0.1.4" --no-deps
+uv pip install "llvmlite>=0.43.0" "numba>=0.60.0" "librosa>=0.10.0" "resemble-perth" --no-deps
+uv pip install conformer diffusers einops rotary-embedding-torch encodec vector-quantize-pytorch
+
+# 5. Apply numpy override for numba compatibility
+uv pip install -r overrides.txt
+
+# 6. Fetch model assets
+python technical-setup/download_models.py
+
+# 7. Pull Ollama translation model
+ollama pull llama3.2
+```
+
+---
+
+## ⚡ Running Bridge
+
+### Option A: One-click local launch
+
+```powershell
+.\scripts\start.ps1
+```
+
+Opens Ollama in a separate terminal, waits until it actually responds on `localhost:11434`, then activates the environment and starts the server. (On a cold start Ollama can take a while; the script polls for up to ~30 seconds before stopping with a clear error.)
+
+### Option B: Remote access via tunnel
+
+Browsers block microphone access over plain HTTP. To share Bridge with a remote user over the web:
+
+```powershell
+# Start the server
+.\.venv\Scripts\Activate.ps1
+python server.py
+
+# Open the tunnel
+.\run_bridge.ps1
+```
+
+This exposes a secure public endpoint (e.g. `https://bridge.loca.lt`) so anyone can connect directly to your local GPU pipeline from their mobile device or desktop browser.
+
+> For safety, Bridge only accepts WebSocket connections whose Origin matches the Host they were opened against, so a random web page can't drive your GPU from another site. If you expose Bridge through a custom proxy that rewrites the Host header, add the extra origin to the `BRIDGE_ALLOWED_ORIGINS` environment variable (comma-separated).
+
+### Option C: Manual launch
+
+```powershell
+# Terminal 1
+ollama serve
+
+# Terminal 2
+.\.venv\Scripts\Activate.ps1
+python server.py
+```
+
+Then open **http://localhost:8000**, pick your languages, click **▶ Start Listening**, and speak.
+
+---
+
+## 🎚️ Tuning the silence threshold
+
+If translation doesn't trigger after you stop speaking, your background noise floor may be above the VAD threshold. Watch the **Mic Level** bar while silent; it should sit below the marker line. Drag the **Silence threshold** slider right until the resting noise level falls below the marker.
+
+| Environment | Suggested threshold |
+|---|---|
+| Quiet room | -40 to -35 dBFS |
+| Normal office | -32 to -28 dBFS |
+| Noisy environment | -25 to -20 dBFS |
+
+---
+
+## 📁 Repository Structure
+
+| Path | Purpose |
+|---|---|
+| `server.py` | FastAPI backend: WebSocket, Whisper STT, Ollama translation, Kokoro/Piper/Chatterbox TTS |
+| `index.html` | Browser client: mic capture, VAD, subtitle display, audio playback |
+| `requirements.txt` | Python dependencies |
+| `overrides.txt` | Dependency constraints (pins `numpy>=2.0.2,<3` for numba compatibility) |
+| `scripts/` | Operational, administration, and diagnostic scripts |
+| `scripts/start.ps1` | One-click local launch: boots Ollama, waits for it, starts the server |
+| `scripts/bridge-remote.ps1` | Remote control: start / stop / status / logs / shutdown the stack from your phone |
+| `scripts/bridge.cmd` | Short entry point: with `scripts/` on your `PATH`, type `bridge start` / `bridge stop` |
+| `scripts/setup.ps1` / `setup.bat` | Automated 1-click environment installer and model downloader |
+| `scripts/download_models.py` | Automated model downloader for Kokoro ONNX and Piper voice files |
+| `scripts/setup-remote-access.ps1` | One-time elevated setup: Tailscale, OpenSSH Server, phone SSH key, `BridgeStack` task |
+| `scripts/restart-tailscale.ps1` | Recovery helper: a Tailscale backend stuck in `NoState` |
+| `scripts/diagnose-ssh-firewall.ps1` | Troubleshooting report for SSH-over-Tailscale connectivity |
+| `technical-setup/` | Technical setup guides, architecture reference, and installer scripts |
+| `voice_samples/` | Locally recorded voice cloning reference clips (gitignored, swept at startup/shutdown) |
+| `piper_voices/` | Optional Piper TTS voices: German Thorsten and optional Korean KSS |
+
+**Documentation in `technical-setup/`:**
+
+| Doc | Purpose |
+|---|---|
+| [`technical-setup/README.md`](README.md) | Full architecture and technical reference |
+| [`technical-setup/REMOTE_ACCESS.md`](REMOTE_ACCESS.md) | Phone-control walkthrough: setup, one-tap snippets, security, troubleshooting |
+| [`technical-setup/bridge-troubleshooting-guide.md`](bridge-troubleshooting-guide.md) | Install and setup problems, with the verified clean-install sequence |
+
+---
+
+## 🔒 What is and isn't public
+
+This repo is public, so it is worth being explicit about what lives in it, and more importantly, what does not.
+
+**Everything tracked here is meant to be public.** That is the source: `server.py`, `index.html`, the `.ps1` / `.cmd` launchers, the docs, and the CI config. The PowerShell scripts are *product*, not secrets. `bridge-remote.ps1` and `setup-remote-access.ps1` are the entire remote-control feature, and hiding them would give every other user a repo with no phone control.
+
+**What is never committed**, and where it actually lives instead:
+
+| Item | Real Location |
+|---|---|
+| Your SSH private key | `~\.ssh\`: outside this folder, and pattern-ignored in case it isn't |
+| The public half of that key | `C:\ProgramData\ssh\administrators_authorized_keys`, ACL-locked to SYSTEM + Administrators |
+| Your Windows account password | Task Scheduler's LSA secret store: read at runtime by `Get-Credential`, never written to a file |
+| Model weights & voice files | `*.onnx`, `*.bin`, `voices.json`, `piper_voices/` |
+| Your recorded voice clips | `voice_samples/`: deleted from disk at shutdown |
+| Logs, tunnel URL, your IPs | `remote_logs/` |
+| `.env` files and API keys | `.env.*` (a `.env.example` with blanks is welcome) |
+
+**The rule to keep:** ignore *personal* scripts, track *shared* ones. `run_bridge.ps1` is a local convenience launcher and is gitignored; `bridge-remote.ps1` is part of the project and is tracked. If you ever write a script that genuinely embeds a secret, ignore **that one file by name** (never `*.ps1`), or better, read the secret from an ignored `.env.local` at runtime.
+
+---
+
 ## Troubleshooting
 
 ### No voice output for non-English languages
@@ -273,7 +456,10 @@ The espeak lang code for Mandarin is `cmn`, not `zh`. This is already handled in
 Piper's `synthesize()` requires the output WAV file to have its format set first via `setnchannels`/`setsampwidth`/`setframerate`; it doesn't configure this itself. Already handled in `_synthesise_piper()`; if you're extending Piper to a new language, make sure any new synthesis call sets these before calling `voice.synthesize()`.
 
 ### Voice cloning loads on CPU instead of CUDA
-Check that your installed `torch` build matches your CUDA version. `chatterbox-tts` pulls in PyTorch as a dependency, which can sometimes resolve to a CPU-only wheel depending on your pip/uv resolution order. Reinstalling with an explicit CUDA index URL usually fixes this.
+Check that your installed `torch` build matches your CUDA version. `chatterbox-tts` pulls in PyTorch as a dependency, which can sometimes resolve to a CPU-only wheel depending on your pip/uv resolution order. Reinstalling with an explicit CUDA index URL usually fixes this:
+```powershell
+uv pip install --reinstall torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+```
 
 ### Voice upload returns 500 "Could not process the audio sample"
 The WebM→WAV conversion failed in both `torchaudio` and the `soundfile` fallback. Usually means the recording was empty, corrupted, or your system is missing ffmpeg. Try recording again; if it persists, check that ffmpeg is on PATH.
@@ -282,7 +468,10 @@ The WebM→WAV conversion failed in both `torchaudio` and the `soundfile` fallba
 Expected behavior per Chatterbox's own documentation. If the reference clip's language differs from the target translation language, the output can inherit the reference's accent. `cfg_weight=0.3` mitigates this but doesn't eliminate it. For best fidelity, record the reference sample in your most commonly used target language.
 
 ### "Ollama not reachable at localhost:11434"
-Run `ollama serve` in a separate terminal before starting the server.
+Run `ollama serve` in a separate terminal before starting the server, or use `.\scripts\start.ps1` which starts Ollama automatically.
+
+### "llama3.2 not found"
+Run `ollama pull llama3.2`.
 
 ### CUDA not detected for Whisper
 ```powershell
@@ -291,3 +480,9 @@ pip install ctranslate2 --force-reinstall --index-url https://download.pytorch.o
 
 ### Translation never triggers
 Background noise floor is above the silence threshold. Watch the Mic Level bar while silent; it should sit below the marker. Drag the Silence threshold slider right until it does.
+
+### "The term '.\run_bridge.ps1' is not recognized"
+Run this first to allow local script execution:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+```
