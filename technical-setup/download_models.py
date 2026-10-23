@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Model download script for Bridge.
 Downloads required model files for Kokoro and Piper TTS if they are missing from the clone:
@@ -10,9 +9,9 @@ Downloads required model files for Kokoro and Piper TTS if they are missing from
 """
 
 import argparse
-import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -134,7 +133,7 @@ def download_file(url: str, dest_path: Path, name: str, force: bool = False) -> 
         print(f"    Completed successfully: {format_bytes(final_size)} saved.")
         return True
 
-    except Exception as e:
+    except (urllib.error.URLError, OSError, TimeoutError, Exception) as e:  # noqa: BLE001
         print(f"\n[ERROR] Failed to download {name}: {e}", file=sys.stderr)
         if temp_path.exists():
             try:
