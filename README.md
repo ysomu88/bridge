@@ -104,7 +104,7 @@ Bridge processes your speech through an on-premise neural pipeline:
 
 Bridge is open-source. If you are a developer looking to inspect the full architecture, review CUDA requirements, or deploy your own local GPU server:
 
-👉 **[See technical-setup/DOCUMENTATION.md](technical-setup/DOCUMENTATION.md)** for:
+👉 **[See technical-setup/README.md](technical-setup/README.md)** for:
 - Complete system architecture diagrams & raw Float32 PCM WebSocket protocol
 - Hardware benchmarks & VRAM budgets (RTX 3070 Ti, 8 GB VRAM)
 - Single 1-click automated installer (`setup.ps1` / `setup.bat`)

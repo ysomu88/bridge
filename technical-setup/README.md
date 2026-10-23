@@ -395,7 +395,7 @@ If translation doesn't trigger after you stop speaking, your background noise fl
 
 | Doc | Purpose |
 |---|---|
-| [`technical-setup/DOCUMENTATION.md`](DOCUMENTATION.md) | Full architecture and technical reference |
+| [`technical-setup/README.md`](README.md) | Full architecture and technical reference |
 | [`technical-setup/REMOTE_ACCESS.md`](REMOTE_ACCESS.md) | Phone-control walkthrough: setup, one-tap snippets, security, troubleshooting |
 | [`technical-setup/bridge-troubleshooting-guide.md`](bridge-troubleshooting-guide.md) | Install and setup problems, with the verified clean-install sequence |
 

@@ -5,7 +5,7 @@ voices.json
 *.onnx.json
 *.bin
 
-# Piper voice model files (downloaded separately — see docs/DOCUMENTATION.md)
+# Piper voice model files (downloaded separately — see technical-setup/README.md)
 piper_voices/
 
 # User-recorded voice cloning reference clips — personal audio, never commit
