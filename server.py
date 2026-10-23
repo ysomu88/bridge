@@ -586,24 +586,14 @@ async def _synthesise_piper(
     except Exception:
         return
 
-    # Stream in chunks
-    CHUNK = 4800  # ~100 ms at 22050 Hz (int16 = 2 bytes per sample)
+    audio_duration = len(pcm_bytes) / float(sample_rate * 2)
     state.tts_playing = True
     try:
-        for i in range(0, len(pcm_bytes), CHUNK * 2):
-            chunk = pcm_bytes[i : i + CHUNK * 2]
-            if not chunk:
-                continue
-            try:
-                await websocket.send_bytes(chunk)
-            except Exception:
-                logger.warning("WebSocket closed during Piper TTS streaming.")
-                return
+        await websocket.send_bytes(pcm_bytes)
+        await asyncio.sleep(audio_duration + 0.4)
+    except Exception:
+        logger.warning("WebSocket closed during Piper TTS streaming.")
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
         state.tts_playing = False
 
     logger.info(f"🔊 Piper TTS stream complete ({target_lang}).")
@@ -715,23 +705,16 @@ async def _synthesise_chatterbox(
     pcm_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
     pcm_bytes = pcm_int16.tobytes()
 
-    CHUNK = 4800  # ~100-200ms depending on sample rate, 2 bytes/sample
+    audio_duration = len(audio_array) / float(sample_rate)
     state.tts_playing = True
     try:
-        for i in range(0, len(pcm_bytes), CHUNK * 2):
-            chunk = pcm_bytes[i : i + CHUNK * 2]
-            if not chunk:
-                continue
-            try:
-                await websocket.send_bytes(chunk)
-            except Exception:
-                logger.warning("WebSocket closed during Chatterbox TTS streaming.")
-                return
+        # Send full utterance as an unbroken buffer to prevent resampler chunking clicks on mobile
+        await websocket.send_bytes(pcm_bytes)
+        # Keep echo guard armed for the exact playback duration + 400ms margin to prevent mic feedback
+        await asyncio.sleep(audio_duration + 0.4)
+    except Exception:
+        logger.warning("WebSocket closed during Chatterbox TTS streaming.")
     finally:
-        # Keep the echo guard armed briefly after the last chunk — the client
-        # continues playing buffered audio for a few hundred ms, so the mic may
-        # still be hearing our output. Don't let that tail re-trigger VAD.
-        await asyncio.sleep(0.5)
         state.tts_playing = False
 
     logger.info(f"🎙️  Chatterbox cloned-voice TTS stream complete ({target_lang}, voice={voice_id}).")
@@ -1574,7 +1557,14 @@ async def root():
     index_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     try:
         with open(index_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+            return HTMLResponse(
+                content=f.read(),
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
     except FileNotFoundError:
         return HTMLResponse(content="<h1>index.html not found</h1>", status_code=404)
 
