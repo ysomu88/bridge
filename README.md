@@ -111,3 +111,17 @@ Bridge is open-source. If you are a developer looking to inspect the full archit
 - Automated model asset downloader (`scripts/download_models.py`)
 - Remote phone-tunnel and SSH management guides (`technical-setup/REMOTE_ACCESS.md`)
 - Dependency troubleshooting & recovery guide (`technical-setup/bridge-troubleshooting-guide.md`)
+
+---
+
+## 📚 Model Attributions & Citations
+
+Bridge relies on open-source foundation models and engines across its pipeline components:
+
+- **Speech-to-Text (STT)**: [Whisper](https://github.com/openai/whisper) ([Radford et al., 2022](https://arxiv.org/abs/2212.04356), OpenAI), implemented via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (SYSTRAN).
+- **Machine Translation (LLM)**: [Llama 3.2 3B](https://github.com/meta-llama/llama-models) ([Meta AI](https://ai.meta.com/blog/llama-3-2-connect-2024/), 2024), served locally via [Ollama](https://github.com/ollama/ollama).
+- **Voice Synthesis (TTS)**:
+  - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad, packaged via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) with [eSpeak NG](https://github.com/espeak-ng/espeak-ng) phonemization.
+  - [Piper TTS](https://github.com/rhasspy/piper) by Rhasspy / Michael Hansen (using German *Thorsten* and Korean *KSS* voice checkpoints).
+- **Voice Cloning**: [Chatterbox Multilingual](https://github.com/resemble-ai/chatterbox) by Resemble AI for zero-shot neural voice cloning.
+
