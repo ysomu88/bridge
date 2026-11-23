@@ -41,6 +41,7 @@ Desktop.ini
 TECHNICAL_WALKTHROUGH.md
 docs/*
 !docs/*.md
+!docs/*.mp4
 # Must come AFTER the negation above, or !docs/*.md would un-ignore it and
 # publish an internal document to a public repository.
 docs/TECHNICAL_WALKTHROUGH.md
